@@ -1,6 +1,6 @@
 # RomM → tico Store Bridge: Design Document
 
-**Status:** Draft v3 (both spike rounds complete) · **Date:** 2026-11-14 · **Targets:** tico 0.8.0 (repository `schema: 1`), RomM 4.x
+**Status:** Draft v3 (both spike rounds complete) · **Date:** 2026-11-14 · **Targets:** tico 0.8.0 (repository `schema: 1`), RomM 5.x (the instance in use runs 5.4.1)
 
 ## 1. Summary
 
@@ -159,7 +159,7 @@ https://bridge.example/r/<token>/dl/<package-id>/<version>/<filename>
 
 - Use a publicly trusted certificate. The spike used a Let's Encrypt wildcard. The Switch's homebrew TLS stack won't trust a private CA without extra work.
 - The hostname must resolve *on the Switch*. Modded consoles often use 90DNS or other manual DNS servers, which never see a name that exists only on the router. Use a public DNS record, or add the name to Atmosphère's hosts file.
-- Build every absolute URL, including redirect targets, from `PUBLIC_BASE_URL`. Behind a proxy the `Host` header may be the upstream address.
+- Build every absolute URL, including redirect targets, from `APP_URL`. Behind a proxy the `Host` header may be the upstream address.
 - Appendix A has proxy configurations for Nginx Proxy Manager, plain nginx, and Apache, tuned for ROM downloads.
 
 ### 6.5 Large libraries
@@ -464,17 +464,21 @@ Still open after both rounds:
 ## 13. Configuration sketch
 
 ```env
-ROMM_URL=http://romm:8080
-ROMM_API_TOKEN=rmm_...               # client API token; scopes roms.read, platforms.read
-LIBRARY_PATH=/romm/library          # read-only mount
-PUBLIC_BASE_URL=https://bridge.example   # must be https; every generated URL starts with it
-INSTANCE_SLUG=home
+APP_URL=https://bridge.example      # public address; must be https; every generated URL starts with it
+ROMM_URL=https://romm.example
+ROMM_API_TOKEN=rmm_...              # client API token; scopes roms.read, platforms.read
+INSTANCE_SLUG=home                  # part of every package id (§7.3); do not change it later
 SYNC_INTERVAL_MINUTES=60
-CACHE_DIR=/data/cache
+LIBRARY_PATH=/data/library          # read-only mount; the folder that contains roms/
+CONFIG_PATH=/data/config            # platforms.yaml and the SQLite database
+CACHE_PATH=/data/cache              # built indexes and bundle zips; safe to delete
 CACHE_MAX_GB=50
-PLATFORM_MAP=/config/platforms.yaml
 SKIP_FILES_OVER_4GIB=true           # FAT32 cards; set false only for exFAT
+PUID=1000                           # user and group the bridge runs as in the container;
+PGID=1000                           # must read the library and write config and cache
 ```
+
+**File permissions (`PUID` / `PGID`).** The container starts as root, creates the config and cache folders if they are missing, gives them to `PUID:PGID`, then drops to that user before the bridge starts. The library is only ever read. On an NFS library the numeric ids are what the file server checks, so they must match an id that can read the share.
 
 ## Appendix A. Reverse proxy configuration for Switch downloads
 
