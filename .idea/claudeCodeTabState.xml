@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ClaudeCodeTabState">
+    <option name="tabSessions">
+      <map>
+        <entry key="0">
+          <value>
+            <TabSessionState>
+              <option name="projectPath" value="C:\Repos\TicoRom" />
+              <option name="provider" value="claude" />
+              <option name="sessionId" value="3dc9685c-e2c0-4fd6-95a5-4d67f9832e82" />
+              <option name="cwd" value="C:\Repos\TicoRom" />
+              <option name="model" value="claude-fable-5-2[1m]" />
+              <option name="permissionMode" value="default" />
+            </TabSessionState>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>
