@@ -120,7 +120,7 @@ The bridge mounts the RomM library read-only and serves bytes itself. RomM's API
 Reasons:
 
 - **Auth.** tico can't send credentials. Pointing tico at RomM directly would mean setting `DISABLE_DOWNLOAD_ENDPOINT_AUTH=true` on RomM, which opens every download to anyone who can reach it.
-- **Hashing.** tico wants SHA-256. RomM stores CRC32 / MD5 / SHA-1 (*verify against your version's `/api/docs`*), so the bridge has to read the bytes anyway.
+- **Hashing.** tico wants SHA-256. RomM 5.4.1 has CRC32 / MD5 / SHA-1 for only some files and no SHA-256 (§6.7), so the bridge has to read the bytes anyway.
 - **Range and speed.** One fewer hop, and no dependency on how RomM streams multi-file ROMs.
 
 Fallback when a mount isn't possible (RomM on another host): proxy `GET /api/roms/{id}/content/{file_name}` with a service account and forward `Range`. Slower, and SHA-256 has to be computed by downloading each file once.
@@ -129,7 +129,7 @@ Fallback when a mount isn't possible (RomM on another host): proxy `GET /api/rom
 
 A sync job (interval, plus a manual `POST /admin/sync`) does the work:
 
-1. `GET /api/platforms`, then page through `GET /api/roms` per mapped platform.
+1. `GET /api/platforms`, then page through `GET /api/roms` for each platform that has a map entry (`platform_ids`, `with_files=true`, `limit`, `offset`; the index extras `with_char_index`, `with_filter_values` and `with_rom_id_index` switched off). Excluded platforms are never requested.
 2. Upsert into SQLite keyed by RomM ROM id.
 3. For new or changed files (size or mtime differs), compute SHA-256 from the mount. Hashing runs in a thread pool; the first sync of a large library will take a while and should report progress.
 4. Run the mapper, write `index.json` + `index.json.gz` atomically (write temp, rename).
@@ -179,9 +179,32 @@ The bridge guards against this without hashing on every request:
 
 - **Compare `stat` at request time.** Before sending any bytes, compare the file's size and mtime with the values recorded when it was hashed. On a mismatch, answer 404 and queue that ROM for re-hashing and an index rebuild. This costs one `stat` call.
 - **Put the version in the download URL** (`/dl/<package-id>/<version>/<filename>`). tico resumes with `Range` but sends no `If-Range` (*observed*), so it cannot tell that a file changed between attempts. With a versioned URL, a partial download of the old file can only resume against an address that now answers 404.
-- **Do not hash the file on each request.** Hashing reads the whole file before the first byte goes out: seconds on a fast local disk, minutes for a multi-GB file on a NAS or a spinning disk. tico also makes a new request for every resume and retry, so the cost would repeat.
+- **Do not hash the file on each request.** Hashing reads the whole file before the first byte goes out: seconds on a fast local disk, minutes for a multi-GB file on slower storage. tico also makes a new request for every resume and retry, so the cost would repeat.
 
 A periodic background re-hash of the whole library would additionally catch silent disk corruption. It is optional and can come later.
+
+### 6.7 What RomM provides (checked against 5.4.1)
+
+`tools/romm_probe.py` pulled every record from the instance in use on 2026-11-15 (20 platforms, 789 ROMs) and compared it with the mounted library. The token needed only `roms.read` and `platforms.read`.
+
+| Need | RomM field | Finding |
+|---|---|---|
+| Where the file is | `files[].full_path`, relative to the library root, e.g. `roms/gba/Game.7z` | All 116,720 file entries resolved to a file under `LIBRARY_PATH`. |
+| Size and modification time | `files[].file_size_bytes`, `files[].last_modified` | Out of date for 53 files that were replaced on disk after RomM's last scan. |
+| Single file or set | `has_simple_single_file`, `has_nested_single_file`, `has_multiple_files`; per file `is_top_level`, `category` | Decides file mode or bundle. |
+| What an archive holds | `files[].archive_members` | Present for 350 archives, so the mapper can inspect a `.zip` / `.7z` without opening it. |
+| Hashes | `crc_hash`, `md5_hash`, `sha1_hash`, `chd_sha1_hash` | Only on some files (636 of them); no SHA-256. |
+| Text | `name`, `summary` | Present on all but one ROM. |
+| Cover | `path_cover_small`, `path_cover_large`, e.g. `/assets/romm/resources/roms/1/2/cover/small.png` | Present on all but one ROM. RomM serves these **without authentication**. |
+| Variants | `sibling_roms`, `regions`, `revision`, `tags` | 57 ROMs have siblings. |
+| Paging | `GET /api/roms` returns `items` and `total` | 100 per page worked. |
+
+Consequences:
+
+- **RomM says what exists and where; the disk says size, mtime, and hash.** The bridge never copies a size from RomM into the index.
+- **Covers need no credential.** The bridge can fetch them from RomM with no extra scope. They still go through the bridge (§7.3), so the Switch needs one hostname and RomM itself stays off the console's network.
+- **For this library, file mode delivers every game on a platform tico supports.** The cartridge platforms hold `.7z` / `.zip` archives that the cores open directly, and the disc platforms hold single `.chd`, `.rvz`, `.zcci`, or `.wad` files. No game needs extract or bundle mode, which is why the MVP (§12) ships file mode alone.
+- **Only request platforms that are published.** One excluded platform accounts for 115,000 of the file entries.
 
 ## 7. Package mapping
 
@@ -227,6 +250,12 @@ Plan: ship v1 with no support for bundles; later add size-capped LRU disk cache 
 | `size`, `sha256` | From the hash cache; for bundles, of the built zip. |
 | `install` | From the platform map, e.g. `tico/roms/snes`. |
 | `filename` | Sanitized library file name (§9, "File names"). |
+
+**The instance slug (`INSTANCE_SLUG`).** tico requires a package id to be unique across every repository a user has added, and drops duplicates (§2). RomM's ROM ids are small numbers that every RomM instance reuses, so `romm-4821` from one bridge would collide with `romm-4821` from another. The instance slug is a short label for *this* RomM that goes into every id, as `romm-<slug>-<rom id>`, e.g. `romm-home-4821`.
+
+- `home` is a fine value for someone running one RomM. Two bridges that a user might add to the same console need different slugs.
+- Allowed characters are those of a package id: lowercase letters, digits, `.`, `_`, `-`. Keep it short; the whole id is capped at 64 characters. The bridge validates this at startup.
+- **Treat it as permanent.** tico tracks installed games and updates by id. Changing the slug changes every id, so tico would show every game as a new, uninstalled package.
 
 ### 7.4 Examples
 
@@ -288,12 +317,25 @@ Multi-disc game as a bridge-built bundle (extracts flat into the console folder)
 
 ## 8. Platform map
 
-A YAML file, shipped with defaults and overridable by the user. Keyed by RomM's `fs_slug` (the folder name), since that's what users control; `slug` is accepted as a fallback.
+A YAML file, `platforms.yaml`, in `CONFIG_PATH`. Keyed by RomM's `fs_slug` (the folder name), since that's what users control; `slug` is accepted as a fallback.
+
+**The map is the only place that decides which platforms are published.** The code holds no list of supported or unsupported consoles. Every RomM platform falls into one of three cases:
+
+| In the map | Result |
+|---|---|
+| An entry under `platforms` | Published as described by the entry. |
+| Named in `exclude` | Not published, and not mentioned again. This is how platforms with no tico console are left out. |
+| Neither | Not published, with a warning at startup and in the sync report, so a new platform is never dropped unnoticed. |
+
+The image carries a default map. On first start the bridge copies it into `CONFIG_PATH` if no `platforms.yaml` is there; from then on only that copy is read, and it is the user's to edit.
 
 ```yaml
 defaults:
   zip_policy: extract            # extract | keep
   multi_file: bundle             # bundle | skip
+
+# RomM platforms that are deliberately not published, e.g. no tico console for them
+exclude: [ps3, switch, xbox, xbox360, nintendo-dsi]
 
 platforms:
   snes:
@@ -342,12 +384,12 @@ Per-platform fields:
 | `companion_extensions` | Files valid only as part of a set. |
 | `zip_policy` | Whether a library `.zip` is unpacked (`extract`) or delivered whole (`keep`). This is the "does tico need to extract" flag. |
 | `multi_file` | Bundle or skip multi-file games. |
-| `chd_types` | CHD variants the console's core launches (`cd`, `dvd`). Others are skipped and reported. Default: all. |
-| `enabled` | Hide a platform without deleting its entry. |
+| `chd_types` | CHD variants the console's core launches (`cd`, `gd`, `dvd`). Others are skipped and reported. Default: all. |
+| `enabled` | Set to `false` to stop publishing a platform while keeping its entry. For a platform that will never be published, use `exclude` instead. |
 
 `tico_slug` is tico's ROM folder name. Spike C confirmed that all 23 produce a console shelf when used as a tag: `nes`, `snes`, `n64`, `gb`, `gbc`, `gba`, `nds`, `3ds`, `gc`, `wii`, `triforce`, `genesis`, `master-system`, `game-gear`, `sega-cd`, `saturn`, `dc`, `psx`, `psp`, `ps2`, `fbneo`, `naomi`, `atomiswave`.
 
-Fill the extensions from tico's "Supported ROM Formats" page, and add a startup check that warns about RomM platforms with no map entry.
+Fill the extensions from tico's "Supported ROM Formats" page.
 
 ## 9. Other issues and how to handle them
 
@@ -356,7 +398,7 @@ Fill the extensions from tico's "Supported ROM Formats" page, and add a startup 
 | **`.7z` / `.rar` in the library** | Not a documented package archive. If the console's core loads that extension directly, deliver it in **file** mode. Otherwise skip and log. Don't re-compress on the fly. |
 | **Zips with several ROMs or junk files inside** | `extract` dumps everything into the console folder. During the hash pass, inspect the zip listing; if it holds more than one loadable file, fall back to `keep` when the core reads zips, else skip and log. |
 | **Multi-disc sets** | Bundle flat (no `extract_to_folder`) so the `.m3u` relative paths resolve and the user doesn't need Scan Subfolders. Check for name collisions across games on the same platform (`Track 01.bin`); on collision, deliver that game with `extract_to_folder` rather than overwrite. *Observed:* its files land in a subfolder and the game still appeared on the shelf; whether that depends on the Scan Subfolders setting was not checked. |
-| **CHD variants** | *Observed (one game):* a PS2 `.chd` made with `chdman createdvd` installed but did not launch; the same game as a `createcd` CHD launched. The variant is readable from the CHD header's metadata tag without decompressing: `CHT2` for CD-type (verified), `DVD ` for DVD-type (verified). Read it during the hash pass; where the platform map limits `chd_types`, skip the others and list them in the skipped-ROM report. Converting them is a stretch goal (§12). |
+| **CHD variants** | *Observed (one game):* a PS2 `.chd` made with `chdman createdvd` installed but did not launch; the same game as a `createcd` CHD launched. The variant is readable from the CHD header's metadata tag without decompressing: `CHT2` for CD-type (verified), `DVD ` for DVD-type (verified), `CHGD` for GD-ROM. In the library every PS1 and PS2 image carries `CHT2` and every Dreamcast image `CHGD`. Read it during the hash pass; where the platform map limits `chd_types`, skip the others and list them in the skipped-ROM report. Converting them is a stretch goal (§12). |
 | **File names** | The SD card is FAT32/exFAT. Strip `\ / : * ? " < > |`, trailing dots and spaces, and cap length. `filename` may not contain folders. URL-encode the path segment separately from the stored `filename`. |
 | **4 GiB limit on FAT32** | Files ≥ 4 GiB can't be written on FAT32 cards, and tico does not check first. *Observed:* a 6.8 GiB download ran for 55 minutes, failed when the file on the card reached 4 GiB, and retries failed the same way. Skip these files by default and list them in the skipped-ROM report. A config flag re-enables them for exFAT cards (untested). |
 | **Download speed** | *Observed:* about 1.2 MB/s (10 Mbit/s) on the Switch for multi-GB files, so a 2 GiB game takes about half an hour. The server and proxy are not the limit (§11). Not yet investigated; §11 lists the experiments, and Appendix A adds a proxy log that shows where the limit is. |
@@ -455,8 +497,8 @@ Still open after both rounds:
 ## 12. Milestones
 
 1. ~~Spikes A–H~~ Done (§11). Remaining before the MVP: a filled-in platform map for the consoles actually in the library. The download-speed experiments (§11) can run alongside.
-2. **MVP:** RomM client, syncer, hash cache, file + extract modes, combined and per-platform indexes, tokenized and versioned download endpoint with `Range` and the `stat` check (§6.6), skip rules (files ≥ 4 GiB, CHD variants), HTTPS deployment behind a reverse proxy.
-3. **Bundles** for multi-file games, with `extract_to_folder` on name collisions; cover proxy; `.json.gz`.
+2. **MVP:** RomM client, syncer, hash cache, file mode (which covers the whole library in use, §6.7), combined and per-platform indexes, tokenized and versioned download endpoint with `Range` and the `stat` check (§6.6), skip rules (files ≥ 4 GiB, CHD variants), HTTPS deployment behind a reverse proxy.
+3. **Extract mode and bundles** for multi-file games, with `extract_to_folder` on name collisions; cover proxy; `.json.gz`.
 4. **Admin surface:** sync status, skipped-ROM report, token management (CLI is enough).
 5. **Later:** virtual stored zips for bundles, collection-based repositories, sibling filtering, firmware/BIOS packages, optional `magnet` variants for large files, background re-hash of the library.
 6. **Stretch:** convert with `chdman` into the cache, e.g. DVD-type CHD → CD-type for PS2, or bin/cue → CHD. This doubles storage for converted games and needs the same cache as bundles.
@@ -478,7 +520,9 @@ PUID=1000                           # user and group the bridge runs as in the c
 PGID=1000                           # must read the library and write config and cache
 ```
 
-**File permissions (`PUID` / `PGID`).** The container starts as root, creates the config and cache folders if they are missing, gives them to `PUID:PGID`, then drops to that user before the bridge starts. The library is only ever read. On an NFS library the numeric ids are what the file server checks, so they must match an id that can read the share.
+**File permissions (`PUID` / `PGID`).** The container starts as root, creates the config and cache folders if they are missing, gives them to `PUID:PGID`, then drops to that user before the bridge starts. The library is only ever read.
+
+**Paths.** `LIBRARY_PATH`, `CONFIG_PATH`, and `CACHE_PATH` are folders on the host. `docker-compose.yml` mounts them into the container at fixed places (`/data/library` read-only, `/data/config`, `/data/cache`), and the bridge inside always uses those. Run outside Docker, the bridge reads the three variables directly. The bridge treats all three as plain directories and assumes nothing about the storage behind them; the only requirement is that `PUID:PGID` can read the library and write the other two.
 
 ## Appendix A. Reverse proxy configuration for Switch downloads
 
