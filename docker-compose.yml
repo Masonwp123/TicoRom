@@ -1,0 +1,38 @@
+# TicoRom. Settings come from the .env file next to this one (see .env.example).
+#
+#   docker compose up -d --build     build and start
+#   docker compose logs -f           watch the log, including the startup checks
+#   docker compose run --rm ticorom check    run only the startup checks
+#   docker compose down              stop
+
+services:
+  ticorom:
+    image: ticorom:dev
+    container_name: ticorom
+    restart: unless-stopped
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # Should have read permissions to the library and rw to config and cache
+      PUID: 1000
+      PGID: 1000
+      ## The URL to run against, must be https with a public certificate
+      APP_URL: ${APP_URL}
+      ## The URL RomM runs at, should be over https to avoid security issues
+      ROMM_URL: ${ROMM_URL}
+      ## RomM API token, needs library and platform read permissions
+      ROMM_API_TOKEN: ${ROMM_API_TOKEN}
+      ## Gets added to package ids, tico requires each repository to have
+      ## different ids, so this should be unique (use a-z|.|_|- max 32 chars)
+      INSTANCE_SLUG: "home"
+      # How often the instance syncs with RomM
+      SYNC_INTERVAL_MINUTES: 60
+      # How large the cache can grow
+      CACHE_MAX_GB: 10
+      # Skip over 4GB files, as FAT32 cannot write them
+      SKIP_FILES_OVER_4GIB: true
+    volumes:
+      - /data/library:/data/library:ro
+      - ./docker/config:/data/config
+      - ./docker/cache:/data/cache

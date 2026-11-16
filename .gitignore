@@ -1,4 +1,14 @@
-.idea/
-.env
-probe/
+# Python files
 __pycache__/
+.pytest_cache/
+.venv/
+
+# IDE
+.idea/
+
+# Docker
+docker/
+
+# Configuration
+.env
+*.egg-info/

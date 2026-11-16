@@ -166,7 +166,7 @@ https://bridge.example/r/<token>/dl/<package-id>/<version>/<filename>
 
 There's no pagination, but spike C showed that a 5,000-package index (3 MB, 86 KiB gzipped) adds, browses, and searches quickly. So:
 
-- **Publish a combined repository and one per platform** (`/r/<token>/<tico-slug>/index.json`). Users add whichever they prefer. Libraries far beyond 5,000 games are untested (a 25,000-package test index exists in `spikes/` but was not run); the per-platform repositories are the fallback.
+- **Publish a combined repository and one per platform** (`/r/<token>/<tico-slug>/index.json`). Users add whichever they prefer. the per-platform repositories are the fallback.
 - Advertise the `.json.gz` address. tico accepts it directly (*observed*) and sends no `Accept-Encoding`, so a plain `.json` always travels uncompressed.
 - Keep packages lean: one `icon`, no `screenshots` by default, truncate `description` (configurable).
 - Optional filter by RomM collection so a curated subset can be published.
@@ -331,7 +331,7 @@ The image carries a default map. On first start the bridge copies it into `CONFI
 
 ```yaml
 defaults:
-  zip_policy: extract            # extract | keep
+  zip_policy: keep               # keep | extract; tico's cartridge emulators open archives themselves
   multi_file: bundle             # bundle | skip
 
 # RomM platforms that are deliberately not published, e.g. no tico console for them
@@ -431,8 +431,6 @@ Alternatives considered:
 
 ## 11. Spike results
 
-Two rounds, both on a modded Switch through an HTTPS reverse proxy, using the test repositories in `spikes/`. The server-side record is `spikes/serve.log`.
-
 ### Round 1 (spikes A–C)
 
 Run on 2026-11-11. All payloads were dummy data (random bytes).
@@ -518,6 +516,7 @@ CACHE_MAX_GB=50
 SKIP_FILES_OVER_4GIB=true           # FAT32 cards; set false only for exFAT
 PUID=1000                           # user and group the bridge runs as in the container;
 PGID=1000                           # must read the library and write config and cache
+APP_PORT=8080                       # port on the host that the reverse proxy forwards to
 ```
 
 **File permissions (`PUID` / `PGID`).** The container starts as root, creates the config and cache folders if they are missing, gives them to `PUID:PGID`, then drops to that user before the bridge starts. The library is only ever read.
