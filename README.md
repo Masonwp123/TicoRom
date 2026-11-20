@@ -48,8 +48,11 @@ Edit the file and restart to change it. The comments at its top explain each fie
 
 ## Development
 
+Uses [uv](https://docs.astral.sh/uv/). Dependency versions are pinned in `uv.lock`.
+
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                 # tests; they never touch the real RomM or library
-.venv/bin/ticorom check          # startup checks, using .env in the current folder
+uv sync                          # create .venv with the app and the dev tools
+uv run pytest                    # tests; they never touch the real RomM or library
+uv run ticorom check             # startup checks, using .env in the current folder
+uv add <package>                 # add a dependency (uv add --dev for a dev tool)
 ```

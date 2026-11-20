@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
 
 [project]
 name = "ticorom"
@@ -16,17 +16,11 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = ["pytest>=8"]
 
 [project.scripts]
 ticorom = "ticorom.startup.start:main"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-ticorom = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
