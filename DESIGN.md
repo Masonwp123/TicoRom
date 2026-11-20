@@ -109,7 +109,7 @@ Components:
 - **Mapper** — applies the platform map (§8) and decides the delivery mode per ROM.
 - **Index builder** — writes `index.json` and `index.json.gz` per repository to the cache dir.
 - **Download endpoint** — streams files from the read-only mount with `Range` support.
-- **Store** — SQLite (one file, no extra container).
+- **Store** — SQLite (one file, no extra container); schema in §6.8.
 
 ## 6. Key design points
 
@@ -130,11 +130,11 @@ Fallback when a mount isn't possible (RomM on another host): proxy `GET /api/rom
 A sync job (interval, plus a manual `POST /admin/sync`) does the work:
 
 1. `GET /api/platforms`, then page through `GET /api/roms` for each platform that has a map entry (`platform_ids`, `with_files=true`, `limit`, `offset`; the index extras `with_char_index`, `with_filter_values` and `with_rom_id_index` switched off). Excluded platforms are never requested.
-2. Upsert into SQLite keyed by RomM ROM id.
-3. For new or changed files (size or mtime differs), compute SHA-256 from the mount. Hashing runs in a thread pool; the first sync of a large library will take a while and should report progress.
-4. Run the mapper, write `index.json` + `index.json.gz` atomically (write temp, rename).
+2. Replace the RomM mirror tables with what RomM returned (§6.8), in one transaction.
+3. For new or changed files (size or mtime differs from `file_facts`), compute SHA-256 from the mount. Hashing runs in a thread pool; the first sync of a large library will take a while and should report progress.
+4. Run the mapper to rebuild `packages`, then write `index.json` + `index.json.gz` atomically (write temp, rename).
 
-Requests for the index are then a static file read. tico never waits on RomM.
+Requests for the index are then a static file read plus one string substitution for the token (§6.8). tico never waits on RomM.
 
 ### 6.3 Authentication without headers
 
@@ -146,7 +146,7 @@ https://bridge.example/r/<token>/snes/index.json
 https://bridge.example/r/<token>/dl/<package-id>/<version>/<filename>
 ```
 
-- Tokens are random (≥128 bits), stored hashed, revocable, and optionally scoped to platforms.
+- Tokens are random (≥128 bits), stored hashed, revocable, and optionally scoped to platforms. They are managed with the `ticorom token` command (§6.8).
 - The bridge holds the only RomM credential: a client API token with the scopes `roms.read` and `platforms.read` (plus `collections.read` if the collection filter is used), sent as `Authorization: Bearer rmm_…`. Issue it from a dedicated Viewer user, since a token can never hold more than its owner does.
 - Tokens end up in tico's config and in proxy access logs. Treat them like passwords; strip the path from logs if the proxy allows.
 - Rate-limit by token and reject unknown tokens with 404, not 401.
@@ -196,7 +196,7 @@ A periodic background re-hash of the whole library would additionally catch sile
 | Hashes | `crc_hash`, `md5_hash`, `sha1_hash`, `chd_sha1_hash` | Only on some files (636 of them); no SHA-256. |
 | Text | `name`, `summary` | Present on all but one ROM. |
 | Cover | `path_cover_small`, `path_cover_large`, e.g. `/assets/romm/resources/roms/1/2/cover/small.png` | Present on all but one ROM. RomM serves these **without authentication**. |
-| Variants | `sibling_roms`, `regions`, `revision`, `tags` | 57 ROMs have siblings. |
+| Variants | `sibling_roms`, `regions`, `revision`, `tags` | Not usable to find regional copies. On the published platforms, all 24 sibling groups are either the discs of one game or different games sharing a metadata entry (*HeartGold* / *SoulSilver*). `regions` mixes file-name tags with release regions from metadata providers: 236 files with no region in their name still list one. |
 | Paging | `GET /api/roms` returns `items` and `total` | 100 per page worked. |
 
 Consequences:
@@ -205,6 +205,115 @@ Consequences:
 - **Covers need no credential.** The bridge can fetch them from RomM with no extra scope. They still go through the bridge (§7.3), so the Switch needs one hostname and RomM itself stays off the console's network.
 - **For this library, file mode delivers every game on a platform tico supports.** The cartridge platforms hold `.7z` / `.zip` archives that the cores open directly, and the disc platforms hold single `.chd`, `.rvz`, `.zcci`, or `.wad` files. No game needs extract or bundle mode, which is why the MVP (§12) ships file mode alone.
 - **Only request platforms that are published.** One excluded platform accounts for 115,000 of the file entries.
+- **Every file is published as its own package.** There is no reliable way to tell from RomM which files are the same game in different regions, so the bridge does not try (§9).
+
+### 6.8 Database
+
+SQLite, one file at `CONFIG_PATH/ticorom.db`. It lives with the configuration, not in the cache folder: hashes take an hour or more to recompute, and tokens cannot be recreated.
+
+- **Access:** Python's built-in `sqlite3` with plain SQL, run off the event loop with `asyncio.to_thread`. No ORM; the schema is small.
+- **Concurrency:** WAL journal mode, so index requests and downloads keep reading while a sync writes.
+- **Migrations:** the schema version is kept in `PRAGMA user_version`. Numbered migrations run at startup, each in a transaction.
+
+The tables fall into four groups, kept apart because they change at different rates and cost different amounts to rebuild:
+
+| Group | Tables | Comes from | Rebuilt |
+|---|---|---|---|
+| RomM mirror | `platforms`, `roms`, `rom_files` | RomM's API | Every sync. Cheap. |
+| Disk facts | `file_facts` | The library | Only for files whose size or mtime changed. Expensive. |
+| Packages | `packages` | The tables above, `platforms.yaml`, and settings | After every sync. |
+| Bookkeeping | `sync_runs`, `tokens` | The bridge | As things happen. |
+
+```sql
+-- RomM mirror. Only published platforms are fetched (§6.2).
+CREATE TABLE platforms (
+  id              INTEGER PRIMARY KEY,    -- RomM platform id
+  slug            TEXT NOT NULL,
+  fs_slug         TEXT NOT NULL,
+  name            TEXT NOT NULL
+);
+
+CREATE TABLE roms (
+  id              INTEGER PRIMARY KEY,    -- RomM ROM id; part of the package id (§7.3)
+  platform_id     INTEGER NOT NULL REFERENCES platforms(id) ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  fs_name         TEXT NOT NULL,          -- file name with tags, e.g. "Game (USA) (Rev 1).7z"
+  summary         TEXT,
+  genres          TEXT NOT NULL DEFAULT '[]',   -- JSON list
+  release_date    INTEGER,                -- unix seconds
+  cover_path      TEXT,                   -- RomM /assets path, for the cover proxy
+  romm_updated_at TEXT NOT NULL
+);
+
+CREATE TABLE rom_files (
+  id              INTEGER PRIMARY KEY,    -- RomM file id
+  rom_id          INTEGER NOT NULL REFERENCES roms(id) ON DELETE CASCADE,
+  path            TEXT NOT NULL UNIQUE,   -- relative to LIBRARY_PATH
+  file_name       TEXT NOT NULL,
+  is_top_level    INTEGER NOT NULL,
+  category        TEXT,
+  archive_members TEXT                    -- JSON; for extract mode later
+);
+
+-- Disk facts. Keyed by path, not by RomM ids, so hashes survive a RomM rescan.
+CREATE TABLE file_facts (
+  path            TEXT PRIMARY KEY,       -- relative to LIBRARY_PATH
+  size            INTEGER NOT NULL,
+  mtime_ns        INTEGER NOT NULL,
+  sha256          TEXT,                   -- NULL until hashed
+  chd_type        TEXT,                   -- cd | gd | dvd; NULL if not a CHD
+  hashed_at       INTEGER
+);
+
+-- What gets published. Rebuilt after every sync.
+CREATE TABLE packages (
+  id              TEXT PRIMARY KEY,       -- romm-<instance slug>-<rom id>
+  rom_id          INTEGER NOT NULL REFERENCES roms(id) ON DELETE CASCADE,
+  path            TEXT NOT NULL,          -- file served; size and hash come from file_facts
+  tico_slug       TEXT NOT NULL,
+  install         TEXT NOT NULL,
+  filename        TEXT NOT NULL,          -- sanitized for FAT32 / exFAT (§9)
+  mode            TEXT NOT NULL,          -- file; later extract, bundle (§7.1)
+  version         TEXT,                   -- first 8 hex of sha256; part of the download URL
+  status          TEXT NOT NULL,          -- published | pending | skipped
+  skip_reason     TEXT                    -- over_4gib, extension, chd_type, missing, ...
+);
+CREATE INDEX packages_by_console ON packages(tico_slug, status);
+
+-- Bookkeeping
+CREATE TABLE sync_runs (
+  id              INTEGER PRIMARY KEY,
+  started_at      INTEGER NOT NULL,
+  finished_at     INTEGER,
+  status          TEXT NOT NULL,          -- running | ok | failed
+  stats           TEXT,                   -- JSON counts
+  error           TEXT
+);
+
+CREATE TABLE tokens (
+  id              INTEGER PRIMARY KEY,
+  name            TEXT NOT NULL UNIQUE,   -- e.g. "switch"
+  token_sha256    TEXT NOT NULL UNIQUE,   -- the token itself is never stored
+  platforms       TEXT,                   -- JSON list of tico slugs; NULL = all
+  created_at      INTEGER NOT NULL,
+  revoked_at      INTEGER,
+  last_used_at    INTEGER
+);
+```
+
+Rules:
+
+- **A sync is all or nothing.** The mirror tables and `packages` are replaced in one transaction at the end of a successful sync, so games removed from RomM disappear then, and a failed sync leaves the last good state in place. Hashing writes `file_facts` as it goes, so a crash mid-hash does not lose finished work.
+- **`file_facts` rows are dropped only when the file is gone from disk.** Excluding a platform for a while does not throw its hashes away.
+- **A package is `pending` until its file is hashed**, because its version comes from the hash. On the first sync, games appear in tico gradually as hashing works through the library. `skipped` rows carry a reason and make up the skipped-ROM report.
+- **Downloads** look up a package by id and version, then compare the live `stat` of its path with `file_facts` before sending a byte (§6.6).
+- **Tokens** are shown once, when created, and only their SHA-256 is stored. A plain hash is enough because tokens are 128-bit random values, not passwords. Because the bridge never knows a token after creating it, the index cannot be built per token: it is built once with a placeholder where the token goes, and the placeholder is filled from the request URL when the index is served. Managed from the command line:
+
+  ```
+  ticorom token add <name> [--platforms gba,snes]   # prints the token once
+  ticorom token list
+  ticorom token revoke <name>
+  ```
 
 ## 7. Package mapping
 
@@ -244,7 +353,7 @@ Plan: ship v1 with no support for bundles; later add size-capped LRU disk cache 
 | `tags` | `[<tico ROM folder name>]`; the second slot is free for region or a collection name. |
 | `type`, `extract` | Always `type: zip`. `extract: false` for the file mode; omitted for extract and bundle (§7.1). |
 | `version` | First 8 hex chars of the payload SHA-256. **Not** RomM's `updated_at`: a metadata rescan would then offer a pointless update for every game. |
-| `description`, `tagline` | RomM summary (truncated), first genre or release year. |
+| `description`, `tagline` | Description: RomM summary (truncated). Tagline: the tags in the file name (e.g. `USA · Rev 1 · Disc 2`), so copies of the same game can be told apart (§9); otherwise the first genre and release year. |
 | `icon` | Cover image, proxied through the bridge at `/r/<token>/img/<rom id>.jpg` so it is HTTPS and needs no RomM login. |
 | `url` | Bridge download URL. |
 | `size`, `sha256` | From the hash cache; for bundles, of the built zip. |
@@ -404,7 +513,8 @@ Fill the extensions from tico's "Supported ROM Formats" page.
 | **Download speed** | *Observed:* about 1.2 MB/s (10 Mbit/s) on the Switch for multi-GB files, so a 2 GiB game takes about half an hour. The server and proxy are not the limit (§11). Not yet investigated; §11 lists the experiments, and Appendix A adds a proxy log that shows where the limit is. |
 | **Install prompts** | A community repository prompts on every install. Document the Settings > Store toggle in the README. A zip *without* `install`, laid out as `tico/roms/<console>/…`, is allowed to write under `tico/roms/` and may avoid the prompt, but it breaks for users with a custom ROM path. Leave as an opt-in mode after testing. |
 | **Duplicate ids across repositories** | Per-platform and combined repositories list the same ids on purpose; that is harmless. The `<instance>` segment prevents clashes with other people's repositories. |
-| **Regions, revisions, hacks** | RomM groups some as siblings. v1 lists every file as its own package with tags from the file name in `tagline`; a later option can publish only the preferred sibling. |
+| **Regions, revisions, hacks** | Every file is its own package, with the tags from its file name in `tagline`. A "preferred region" option was considered and dropped: RomM's sibling groups are not regional copies, and its `regions` field includes release regions that the file itself may not be (§6.7). Choosing between copies would mean parsing file names and guessing, and a wrong guess hides a game. |
+| **Separate discs** | When RomM lists each disc as its own game ("Disc 1", "Disc 2"; 22 files in the library in use), each disc is its own package. A tico package delivers one download, so the user installs each disc. |
 | **Deleted ROMs** | Dropped from the index on the next sync. tico won't remove installed copies; that's acceptable. |
 | **RomM API drift** | Query parameter names and response shapes have changed between RomM releases. Isolate all calls in one client module, pin a tested RomM version range, and validate responses with Pydantic so a mismatch fails loudly at sync time. |
 | **Hash cost** | Cache by (path, size, mtime). Hash with a bounded thread pool so the bridge doesn't starve RomM of disk I/O. Never hash at request time (§6.6). |
@@ -419,7 +529,7 @@ Fill the extensions from tico's "Supported ROM Formats" page.
 - Async `httpx` for RomM, Pydantic models for both schemas, built-in OpenAPI for the admin endpoints.
 - RomM's own backend is FastAPI, so the code and models would port almost directly if this is ever proposed upstream as a native feed.
 
-Suggested stack: Python 3.12+, FastAPI + Uvicorn, `httpx`, Pydantic v2 / `pydantic-settings`, SQLite via `aiosqlite` (or SQLModel), PyYAML, `pytest` + `respx`. Ship as a Docker image meant to sit in the same compose file as RomM.
+Stack: Python 3.12+, FastAPI + Uvicorn, `httpx`, Pydantic v2 / `pydantic-settings`, SQLite through the standard library's `sqlite3` (§6.8), PyYAML, `pytest`, built with uv. Ship as a Docker image meant to sit in the same compose file as RomM.
 
 Alternatives considered:
 
@@ -495,10 +605,10 @@ Still open after both rounds:
 ## 12. Milestones
 
 1. ~~Spikes A–H~~ Done (§11). Remaining before the MVP: a filled-in platform map for the consoles actually in the library. The download-speed experiments (§11) can run alongside.
-2. **MVP:** RomM client, syncer, hash cache, file mode (which covers the whole library in use, §6.7), combined and per-platform indexes, tokenized and versioned download endpoint with `Range` and the `stat` check (§6.6), skip rules (files ≥ 4 GiB, CHD variants), HTTPS deployment behind a reverse proxy.
+2. **MVP:** RomM client, database (§6.8), syncer, hash cache, `ticorom token` command, file mode (which covers the whole library in use, §6.7), combined and per-platform indexes, tokenized and versioned download endpoint with `Range` and the `stat` check (§6.6), skip rules (files ≥ 4 GiB, CHD variants), HTTPS deployment behind a reverse proxy.
 3. **Extract mode and bundles** for multi-file games, with `extract_to_folder` on name collisions; cover proxy; `.json.gz`.
 4. **Admin surface:** sync status, skipped-ROM report, token management (CLI is enough).
-5. **Later:** virtual stored zips for bundles, collection-based repositories, sibling filtering, firmware/BIOS packages, optional `magnet` variants for large files, background re-hash of the library.
+5. **Later:** virtual stored zips for bundles, collection-based repositories, firmware/BIOS packages, optional `magnet` variants for large files, background re-hash of the library.
 6. **Stretch:** convert with `chdman` into the cache, e.g. DVD-type CHD → CD-type for PS2, or bin/cue → CHD. This doubles storage for converted games and needs the same cache as bundles.
 
 ## 13. Configuration sketch
