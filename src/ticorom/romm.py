@@ -32,6 +32,13 @@ class RomMFile(_Model):
     file_size_bytes: int = 0
     is_top_level: bool = True
     category: str | None = None
+    archive_members: list[dict] | None = None
+
+
+# Metadata RomM gathered from providers (IGDB, ScreenScraper, ...)
+class RomMMetadata(_Model):
+    genres: list[str] = []
+    first_release_date: int | None = None  # milliseconds since 1970
 
 
 # Represents a single rom with all the info we need to represent it to tico
@@ -47,6 +54,8 @@ class RomMRom(_Model):
     has_simple_single_file: bool = False
     has_nested_single_file: bool = False
     has_multiple_files: bool = False
+    updated_at: str = ""
+    metadatum: RomMMetadata | None = None
     files: list[RomMFile] = []
 
 
@@ -119,6 +128,15 @@ class RomMClient:
             "with_rom_id_index": "false",
         })
         return _parse("/api/roms", lambda: RomMPage.model_validate(data))
+
+    # Get every rom of a platform, a page at a time
+    async def all_roms(self, platform_id: int, page_size: int = 100) -> list[RomMRom]:
+        roms: list[RomMRom] = []
+        while True:
+            page = await self.roms_page(platform_id, limit=page_size, offset=len(roms))
+            roms += page.items
+            if not page.items or len(roms) >= (page.total or 0):
+                return roms
 
 
 # Validate the structure of our models

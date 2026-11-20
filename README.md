@@ -33,6 +33,7 @@ Other commands:
 
 ```bash
 docker compose run --rm ticorom check   # run only the startup checks
+docker compose run --rm ticorom sync    # sync with RomM once, in the foreground (serve also syncs on its own)
 docker compose down                     # stop
 ```
 
@@ -54,5 +55,6 @@ Uses [uv](https://docs.astral.sh/uv/). Dependency versions are pinned in `uv.loc
 uv sync                          # create .venv with the app and the dev tools
 uv run pytest                    # tests; they never touch the real RomM or library
 uv run ticorom check             # startup checks, using .env in the current folder
+uv run ticorom sync              # one sync with RomM; the database is CONFIG_PATH/ticorom.db
 uv add <package>                 # add a dependency (uv add --dev for a dev tool)
 ```

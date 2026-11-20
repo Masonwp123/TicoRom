@@ -185,7 +185,7 @@ A periodic background re-hash of the whole library would additionally catch sile
 
 ### 6.7 What RomM provides (checked against 5.4.1)
 
-`tools/romm_probe.py` pulled every record from the instance in use on 2026-11-15 (20 platforms, 789 ROMs) and compared it with the mounted library. The token needed only `roms.read` and `platforms.read`.
+The token needed only `roms.read` and `platforms.read`.
 
 | Need | RomM field | Finding |
 |---|---|---|
