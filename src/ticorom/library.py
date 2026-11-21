@@ -10,7 +10,7 @@ CHUNK = 1024 * 1024
 GIB = 1024 ** 3
 FAT32_LIMIT = 4 * GIB  # FAT32 cannot hold a file of this size or larger
 
-# The first metadata tag in a CHD says what kind of disc it holds (DESIGN.md section 9).
+# The first metadata tag in a CHD says what kind of disc it holds
 CHD_TAG_TYPES = {b"CHT2": "cd", b"CHTR": "cd", b"CHCD": "cd", b"CHGD": "gd", b"DVD ": "dvd"}
 CHD_UNKNOWN = "other"  # a CHD whose metadata names none of the above, e.g. a hard disk image
 

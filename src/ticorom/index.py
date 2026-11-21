@@ -76,7 +76,7 @@ def _repository(name: str, packages: list[dict]) -> dict:
     return {"schema": 1, "name": name, "description": "Games from RomM, published by TicoRom.", "packages": packages}
 
 
-# One package, with the fields from DESIGN.md section 7.3
+# One package
 def _package_entry(row: sqlite3.Row, app_url: str) -> dict:
     url = (f"{app_url}/r/{TOKEN_PLACEHOLDER}/dl/{row['id']}/{row['version']}/"
            f"{quote(row['filename'], safe='')}")
@@ -93,7 +93,8 @@ def _package_entry(row: sqlite3.Row, app_url: str) -> dict:
         "category": "game",
         "tags": [row["tico_slug"]],
         "version": row["version"],
-        "type": "zip",              # file mode: delivered as-is (DESIGN.md section 7.1)
+        # file mode: delivered as-is
+        "type": "zip",
         "extract": False,
         "url": url,
         "filename": row["filename"],

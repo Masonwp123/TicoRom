@@ -119,7 +119,7 @@ def create_app(settings: Settings, platform_map: PlatformMap, database: Database
         if game is None or game.filename != filename or not found_token.allows(game.tico_slug):
             raise HTTPException(status_code=404)
 
-        # The file must still be the one that was hashed (DESIGN.md section 6.6)
+        # The file must still be the one that was hashed
         info = await asyncio.to_thread(downloads.unchanged_stat, settings.library_path, game)
         if info is None:
             log.warning("Refused a download of %s: the file is missing or changed since it was hashed. "

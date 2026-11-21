@@ -70,7 +70,7 @@ def package_id(instance_slug: str, rom_id: int) -> str:
     return f"romm-{instance_slug}-{rom_id}"
 
 
-# A plain file name a FAT32 or exFAT card can hold (DESIGN.md section 9, "File names").
+# A plain file name a FAT32 or exFAT card can hold
 def safe_filename(name: str, fallback: str) -> str:
     name = UNSAFE_FILENAME_CHARS.sub("", name)
     name = re.sub(r"\s+", " ", name).strip().rstrip(". ")
@@ -87,8 +87,7 @@ def extension(file_name: str) -> str:
 
 
 # The package for one game, published or not.
-# `missing` holds the paths RomM lists that are not on disk right now. Their
-# hashes are kept (DESIGN.md section 6.8), so they need telling apart here.
+# `missing` holds the paths RomM lists that are not on disk right now. Their hashes are kept
 def decide(rom_id: int, rom_fs_name: str, files: list[GameFile], entry: Platform, platform_map: PlatformMap,
            facts: dict[str, FileFact], settings: Settings, missing: frozenset[str] = frozenset()) -> Package:
     games = [file for file in files if file.category in (None, "game")]

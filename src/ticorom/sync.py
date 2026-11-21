@@ -331,7 +331,7 @@ def _look_at_disk(conn: sqlite3.Connection, library: Path,
                   roms: list[RomMRom]) -> tuple[list[FileOnDisk], list[str], frozenset[str]]:
     remembered = {row["path"]: (row["size"], row["mtime_ns"])
                   for row in conn.execute("SELECT path, size, mtime_ns FROM file_facts")}
-    # Paths that would lead outside the library are never looked at (DESIGN.md section 9)
+    # Paths that would lead outside the library are never looked at
     listed_by_romm = {file.full_path for rom in roms for file in rom.files if is_safe_relative(file.full_path)}
 
     changed: list[FileOnDisk] = []

@@ -2,8 +2,6 @@
 
 Publishes a [RomM](https://romm.app) library as a [tico](https://github.com/ticohq/tico) Store repository, so games can be browsed and installed from tico on a Nintendo Switch.
 
-**Status: working.** TicoRom syncs with RomM, publishes every game whose console tico supports, with covers, and serves resumable downloads; installing from tico has been tested on a Switch. The design, and the hardware tests behind it, are in [DESIGN.md](DESIGN.md).
-
 ## Run it with Docker
 
 You need Docker with Compose, a RomM instance, and the folder RomM uses as its library.

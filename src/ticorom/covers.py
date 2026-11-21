@@ -1,19 +1,3 @@
-"""Cover images (DESIGN.md section 7.3, "icon").
-
-During a sync, each game gets one cover, saved in CACHE_PATH/covers/:
-
-  - RomM offers a small and a large cover, and with its WebP conversion turned
-    on, a WebP copy of each. The smallest one tico can show is used.
-  - "Can show" is decided from the file's first bytes, not its name: tico shows
-    PNG, JPEG, WebP, GIF and BMP, but not AVIF (tested on hardware).
-  - A cover is downloaded again only when RomM's cover changes (RomM puts a
-    timestamp in its cover paths, so a changed cover has a different path), or
-    when a WebP copy appears for a game whose cover is not WebP yet.
-  - The file name holds a fingerprint of the image, e.g. "4821-9f2c41aa.png".
-    tico fetches each image once and never asks whether it changed, so a new
-    cover must get a new address.
-"""
-
 from __future__ import annotations
 
 import asyncio
