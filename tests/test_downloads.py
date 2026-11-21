@@ -141,3 +141,14 @@ def test_a_missing_file_is_refused(library, client, token):
     full, address = library.publish(7, "roms/gba/Quest.7z", DATA)
     full.unlink()
     assert client.get(f"/r/{token}/dl/{address}").status_code == 404
+
+
+def test_a_path_outside_the_library_is_never_served(library, client, token):
+    outside = library.settings.library_path.parent / "outside.7z"
+    outside.write_bytes(b"not a game")
+    info = os.stat(outside)
+    library.conn.execute("INSERT INTO file_facts (path, size, mtime_ns, sha256) VALUES (?, ?, ?, ?)",
+                         ("../outside.7z", info.st_size, info.st_mtime_ns, "ab" * 32))
+    library.conn.execute("INSERT INTO packages VALUES ('romm-home-7', 7, '../outside.7z', 'gba', 'tico/roms/gba', "
+                         "'outside.7z', 'file', 'abababab', 'published', NULL)")
+    assert client.get(f"/r/{token}/dl/romm-home-7/abababab/outside.7z").status_code == 404

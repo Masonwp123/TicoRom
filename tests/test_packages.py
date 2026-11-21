@@ -2,7 +2,8 @@ import pytest
 
 from ticorom.library import FAT32_LIMIT
 from ticorom.packages import (
-    PENDING, PUBLISHED, SKIPPED, FileFact, GameFile, decide, package_id, safe_filename,
+    PENDING, PUBLISHED, SKIPPED, FileFact, GameFile, Package, _resolve_name_clashes, decide, package_id,
+    safe_filename,
 )
 from ticorom.startup.platforms import parse_platform_map
 
@@ -19,7 +20,7 @@ def run(settings, file_name, platform="gba", fact=FileFact(1024, SHA, None), fil
     path = f"roms/{platform}/{file_name}"
     files = files if files is not None else [GameFile(path, file_name, "game")]
     facts = {path: fact} if fact else {}
-    return decide(42, files, MAP.platforms[platform], MAP, facts, settings, path)
+    return decide(42, file_name, files, MAP.platforms[platform], MAP, facts, settings)
 
 
 def test_a_hashed_game_is_published(make_settings):
@@ -90,3 +91,49 @@ def test_long_file_names_keep_their_extension():
 
 def test_package_id():
     assert package_id("home", 4821) == "romm-home-4821"
+
+
+def test_a_game_inside_a_folder_is_named_after_the_folder(make_settings):
+    files = [GameFile("roms/ps2/Game A/disc.chd", "disc.chd", None, is_top_level=False)]
+    package = decide(42, "Game A", files, MAP.platforms["ps2"], MAP,
+                     {"roms/ps2/Game A/disc.chd": FileFact(1024, SHA, "cd")}, make_settings())
+    assert package.status == PUBLISHED and package.filename == "Game A.chd"
+
+
+def test_a_game_without_files(make_settings):
+    package = decide(42, "Ghost.7z", [], MAP.platforms["gba"], MAP, {}, make_settings())
+    assert package.status == SKIPPED and package.skip_reason == "no_file"
+
+
+@pytest.mark.parametrize("path", ["roms/gba/../../outside.7z", "/srv/outside.7z", "roms\\gba\\outside.7z"])
+def test_paths_outside_the_library_are_skipped(make_settings, path):
+    files = [GameFile(path, "outside.7z", "game")]
+    package = decide(42, "outside.7z", files, MAP.platforms["gba"], MAP, {path: FileFact(10, SHA, None)},
+                     make_settings())
+    assert package.status == SKIPPED and package.skip_reason == "unsafe_path"
+
+
+def test_a_briefly_missing_file_is_skipped_even_though_its_hash_is_kept(make_settings):
+    files = [GameFile("roms/gba/Quest.7z", "Quest.7z", "game")]
+    facts = {"roms/gba/Quest.7z": FileFact(1024, SHA, None)}
+    package = decide(42, "Quest.7z", files, MAP.platforms["gba"], MAP, facts, make_settings(),
+                     frozenset({"roms/gba/Quest.7z"}))
+    assert package.status == SKIPPED and package.skip_reason == "missing"
+
+
+def _package(rom_id, filename, status=PUBLISHED, install="tico/roms/gba"):
+    return Package(f"romm-home-{rom_id}", rom_id, f"roms/x/{rom_id}", "gba", install, filename, "file", "v",
+                   status, None)
+
+
+def test_name_clashes_are_resolved_with_the_rom_id():
+    resolved = _resolve_name_clashes([_package(9, "QUEST.7z"), _package(3, "Quest.7z"), _package(5, "Other.7z"),
+                                      _package(7, "Quest.7z", install="tico/roms/snes")])
+    # FAT32 and exFAT ignore case, so QUEST.7z clashes with Quest.7z; another folder does not clash
+    assert {p.rom_id: p.filename for p in resolved} == {3: "Quest.7z", 9: "QUEST (9).7z", 5: "Other.7z",
+                                                        7: "Quest.7z"}
+
+
+def test_skipped_games_do_not_take_a_name():
+    resolved = _resolve_name_clashes([_package(3, "Quest.7z", status=SKIPPED), _package(9, "Quest.7z")])
+    assert {p.rom_id: p.filename for p in resolved} == {3: "Quest.7z", 9: "Quest.7z"}

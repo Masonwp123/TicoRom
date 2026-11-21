@@ -2,13 +2,13 @@
 
 Publishes a [RomM](https://romm.app) library as a [tico](https://github.com/ticohq/tico) Store repository, so games can be browsed and installed from tico on a Nintendo Switch.
 
-**Status: skeleton.** The container starts, checks its configuration against RomM and the library, and answers a health check. It does not publish games yet. The design, and the hardware tests behind it, are in [DESIGN.md](DESIGN.md).
+**Status: working.** TicoRom syncs with RomM, publishes every game whose console tico supports, with covers, and serves resumable downloads; installing from tico has been tested on a Switch. The design, and the hardware tests behind it, are in [DESIGN.md](DESIGN.md).
 
 ## Run it with Docker
 
 You need Docker with Compose, a RomM instance, and the folder RomM uses as its library.
 
-1. Fill in the environment variables in the compose file:
+1. Put `APP_URL`, `ROMM_URL` and `ROMM_API_TOKEN` in a `.env` file next to `docker-compose.yml` (see `.env.example`), set the rest in the compose file, and change the library volume (`/data/library:/data/library:ro`) so its left side is the folder RomM uses as its library:
 
    | Setting | Meaning |
    |---|---|

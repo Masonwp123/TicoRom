@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sqlite3
 import sys
 import time
 
@@ -14,7 +15,7 @@ from ticorom import __version__, tokens
 from ticorom.app import create_app
 from ticorom.db import Database, DatabaseError
 from ticorom.startup.preflight import run_preflight
-from ticorom.sync import Syncer
+from ticorom.sync import Syncer, SyncBusyError
 from ticorom.startup.settings import Settings, describe_errors, load_settings
 from ticorom.startup.platforms import PlatformMap, PlatformMapError, load_platform_map
 
@@ -41,9 +42,10 @@ def _platform_map_or_defaults(settings: Settings) -> PlatformMap:
         print(f"  FAIL  {error}")
         sys.exit(1)
 
-def _preflight_or_exit(settings: Settings, platform_map: PlatformMap):
+# romm_required=False (serve): an unreachable RomM is a warning, not a failure
+def _preflight_or_exit(settings: Settings, platform_map: PlatformMap, romm_required: bool = True):
     print(f"TicoRom {__version__} startup checks:")
-    report = asyncio.run(run_preflight(settings, platform_map))
+    report = asyncio.run(run_preflight(settings, platform_map, romm_required=romm_required))
     print("\n".join(report.lines()), flush=True)
     if not report.passed:
         print("Startup checks failed.")
@@ -85,6 +87,9 @@ def _token_command(args: argparse.Namespace, settings: Settings, platform_map: P
     except tokens.TokenError as error:
         print(f"  FAIL  {error}")
         sys.exit(1)
+    except sqlite3.Error as error:
+        print(f"  FAIL  The database could not be changed: {error}. Check PUID and PGID.")
+        sys.exit(1)
 
 def _token_add(conn, args: argparse.Namespace, settings: Settings, platform_map: PlatformMap) -> None:
     published = _published_consoles(platform_map)
@@ -119,6 +124,10 @@ def _sync_once(syncer: Syncer) -> None:
     except KeyboardInterrupt:
         print("Sync stopped. Files hashed so far are kept.")
         sys.exit(130)
+    except SyncBusyError:
+        print("  FAIL  Another sync is already running (probably the TicoRom container's own). "
+              "It publishes everything when it finishes; there is no need to run one by hand.")
+        sys.exit(1)
     except Exception as error:
         print(f"  FAIL  Sync failed: {error}")
         sys.exit(1)
@@ -169,7 +178,8 @@ def main() -> None:
         _token_command(args, settings, platform_map, _database_or_exit(settings))
         return
 
-    _preflight_or_exit(settings, platform_map)
+    # `serve` starts even when RomM is down, and keeps serving what it published before
+    _preflight_or_exit(settings, platform_map, romm_required=args.command != "serve")
     database = _database_or_exit(settings)
 
     # Check doesn't run the bridge

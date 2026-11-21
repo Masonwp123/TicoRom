@@ -7,6 +7,7 @@ from pathlib import Path
 
 from starlette.responses import FileResponse
 
+from ticorom.library import is_safe_relative
 from ticorom.packages import PUBLISHED
 
 
@@ -36,6 +37,9 @@ def find(conn: sqlite3.Connection, package_id: str, version: str) -> Download | 
 
 # The file's current stat if it is still exactly the file that was hashed, else None
 def unchanged_stat(library: Path, download: Download) -> os.stat_result | None:
+    # Never serve anything outside the library, whatever the database says
+    if not is_safe_relative(download.path):
+        return None
     try:
         info = os.stat(library / download.path)
     except OSError:

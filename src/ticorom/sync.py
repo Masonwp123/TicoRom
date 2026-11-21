@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import logging
 import sqlite3
@@ -16,7 +17,7 @@ import httpx
 
 from ticorom import covers, index, packages
 from ticorom.db import Database, transaction
-from ticorom.library import GIB, HashCancelled, chd_type, sha256_file, stat_file
+from ticorom.library import GIB, HashCancelled, chd_type, is_safe_relative, sha256_file, stat_file
 from ticorom.romm import RomMClient, RomMError, RomMPlatform, RomMRom
 from ticorom.startup.platforms import PlatformMap, Status
 from ticorom.startup.settings import Settings
@@ -28,6 +29,24 @@ HASH_WORKERS = 2
 
 # During a long hash, how often newly hashed games are published.
 REPUBLISH_EVERY_SECONDS = 30
+
+# After a failed sync (RomM down, library not mounted), try again this soon
+# rather than waiting a whole SYNC_INTERVAL_MINUTES.
+RETRY_AFTER_FAILURE_MINUTES = 5
+
+# Only one sync at a time, also across processes (`ticorom sync` next to a running container)
+LOCK_FILE_NAME = "sync.lock"
+
+
+# None of the files RomM lists can be found: the library is most likely not
+# mounted. Applying the sync would mark every game missing, so it is refused.
+class LibraryUnavailableError(Exception):
+    pass
+
+
+# Another sync is already running.
+class SyncBusyError(Exception):
+    pass
 
 
 # What one sync did. Printed by `ticorom sync` and saved in the sync_runs table.
@@ -99,6 +118,13 @@ class Syncer:
     # Setting `stop` makes a running hash give up quickly (used on shutdown).
     async def run(self, stop: threading.Event | None = None) -> SyncResult:
         stop = stop or threading.Event()
+        lock = _SyncLock(self.settings.config_path / LOCK_FILE_NAME)   # raises SyncBusyError
+        try:
+            return await self._run_locked(stop)
+        finally:
+            lock.release()
+
+    async def _run_locked(self, stop: threading.Event) -> SyncResult:
         started = time.time()
         run_id = await self.database.run(lambda conn: _start_run(conn, started))
         log.info("Sync started")
@@ -162,15 +188,23 @@ class Syncer:
 
         with self.database.connection() as conn:
             # Step 2
-            changed, gone = _look_at_disk(conn, self.settings.library_path, roms)
+            changed, gone, missing = _look_at_disk(conn, self.settings.library_path, roms)
+            listed = {file.full_path for rom in roms for file in rom.files if is_safe_relative(file.full_path)}
+            if listed and missing >= listed:
+                raise LibraryUnavailableError(
+                    f"none of the {len(listed)} files RomM lists are in {self.settings.library_path}. "
+                    "Is the library mounted? Nothing was changed.")
+            if missing:
+                log.warning("%d files RomM lists are not in the library folder; those games are skipped "
+                            "until they are back", len(missing))
             # Step 3, then write the index files tico reads and drop covers nothing uses
-            self._save(conn, platforms, roms, game_covers, changed, gone)
+            self._save(conn, platforms, roms, game_covers, changed, gone, missing)
             index.build(conn, self.settings)
             covers.remove_unused(self.settings.cache_path, game_covers)
             # Step 4
-            self._hash_pending(conn, stop, result)
+            self._hash_pending(conn, stop, result, missing)
             # Publish whatever was hashed since the last republish
-            final_packages = self._publish(conn)
+            final_packages = self._publish(conn, missing)
 
         _count_packages(final_packages, result)
         result.seconds = time.time() - started
@@ -180,24 +214,26 @@ class Syncer:
 
     # Write the new state in one transaction: all of it, or none of it.
     def _save(self, conn: sqlite3.Connection, platforms: list[RomMPlatform], roms: list[RomMRom],
-              game_covers: list[covers.Cover], changed: list[FileOnDisk], gone: list[str]) -> None:
+              game_covers: list[covers.Cover], changed: list[FileOnDisk], gone: list[str],
+              missing: frozenset[str]) -> None:
         with transaction(conn):
             _update_file_facts(conn, changed, gone)
             _replace_romm_mirror(conn, platforms, roms)
             covers.write(conn, game_covers)
             # Decide what to publish. Files without a hash yet become "pending".
-            packages.write(conn, packages.plan(conn, self.platform_map, self.settings))
+            packages.write(conn, packages.plan(conn, self.platform_map, self.settings, missing))
 
     # Decide again what to publish now that more files are hashed, and rewrite the index files.
-    def _publish(self, conn: sqlite3.Connection) -> list[packages.Package]:
-        decided = packages.rebuild(conn, self.platform_map, self.settings)
+    def _publish(self, conn: sqlite3.Connection, missing: frozenset[str]) -> list[packages.Package]:
+        decided = packages.rebuild(conn, self.platform_map, self.settings, missing)
         index.build(conn, self.settings)
         return decided
 
     # ----- Step 4: hash ----------------------------------------------------------
 
     # Hash the files of pending packages, a few at a time, smallest first.
-    def _hash_pending(self, conn: sqlite3.Connection, stop: threading.Event, result: SyncResult) -> None:
+    def _hash_pending(self, conn: sqlite3.Connection, stop: threading.Event, result: SyncResult,
+                      missing: frozenset[str]) -> None:
         todo = conn.execute("""
             SELECT DISTINCT file_facts.path, file_facts.size, file_facts.mtime_ns
             FROM packages JOIN file_facts ON file_facts.path = packages.path
@@ -233,7 +269,7 @@ class Syncer:
 
                 # Publish what is ready now, rather than only at the end
                 if time.monotonic() - last_republish >= REPUBLISH_EVERY_SECONDS:
-                    self._publish(conn)
+                    self._publish(conn, missing)
                     last_republish = time.monotonic()
                     log.info("Hashed %d of %d files (%.1f of %.1f GiB)", result.hashed_files, len(todo),
                              result.hashed_bytes / GIB, total_bytes / GIB)
@@ -252,8 +288,10 @@ class Syncer:
 async def sync_forever(syncer: Syncer, interval_minutes: int, stop: threading.Event,
                        wake: asyncio.Event | None = None) -> None:
     wake = wake or asyncio.Event()
+    retry = min(interval_minutes, RETRY_AFTER_FAILURE_MINUTES)
     while not stop.is_set():
         wake.clear()
+        wait_minutes = interval_minutes
         try:
             await syncer.run(stop)
         except asyncio.CancelledError:
@@ -262,37 +300,49 @@ async def sync_forever(syncer: Syncer, interval_minutes: int, stop: threading.Ev
         except HashCancelled:
             # Also shutting down: hashing was told to stop
             return
-        except (RomMError, OSError, sqlite3.Error) as error:
+        except SyncBusyError as error:
+            # e.g. `ticorom sync` is running next to the container
+            log.info("%s. Trying again in %d minutes.", error, retry)
+            wait_minutes = retry
+        except (RomMError, LibraryUnavailableError, OSError, sqlite3.Error) as error:
             # Expected problems (RomM down, library not mounted, ...): one readable line
-            log.error("Sync failed: %s. Retrying in %d minutes.", error, interval_minutes)
+            log.error("Sync failed: %s. Retrying in %d minutes.", error, retry)
+            wait_minutes = retry
         except Exception:
             # A bug: log the full traceback
-            log.exception("Sync failed unexpectedly. Retrying in %d minutes.", interval_minutes)
+            log.exception("Sync failed unexpectedly. Retrying in %d minutes.", retry)
+            wait_minutes = retry
         # Wait for the next interval, or less if something sets `wake`
         # (a download found a file that changed since it was hashed)
         with suppress(TimeoutError):
-            await asyncio.wait_for(wake.wait(), timeout=interval_minutes * 60)
+            await asyncio.wait_for(wake.wait(), timeout=wait_minutes * 60)
 
 
 # ----- Helpers for step 2: look at the disk ----------------------------------
 
-# Compare the files on disk with what the database remembers.
-# Returns the files that are new or changed (they need hashing), and the
-# Paths whose file is gone from disk (their stored hash is useless now).
-def _look_at_disk(conn: sqlite3.Connection, library: Path, roms: list[RomMRom]) -> tuple[list[FileOnDisk], list[str]]:
+# Compare the files on disk with what the database remembers. Returns:
+#   - the files that are new or changed (they need hashing),
+#   - the remembered files that RomM no longer lists and that are gone from disk
+#     (their stored hash is useless now),
+#   - the files RomM lists that are not on disk right now. Their hashes are
+#     kept: if the file comes back unchanged (a share that was briefly not
+#     mounted), it is not hashed again.
+def _look_at_disk(conn: sqlite3.Connection, library: Path,
+                  roms: list[RomMRom]) -> tuple[list[FileOnDisk], list[str], frozenset[str]]:
     remembered = {row["path"]: (row["size"], row["mtime_ns"])
                   for row in conn.execute("SELECT path, size, mtime_ns FROM file_facts")}
-    listed_by_romm = {file.full_path for rom in roms for file in rom.files}
+    # Paths that would lead outside the library are never looked at (DESIGN.md section 9)
+    listed_by_romm = {file.full_path for rom in roms for file in rom.files if is_safe_relative(file.full_path)}
 
     changed: list[FileOnDisk] = []
     gone: list[str] = []
+    missing: set[str] = set()
 
     for path in listed_by_romm:
         # (size, mtime_ns), or None if missing
         on_disk = stat_file(library / path)
         if on_disk is None:
-            if path in remembered:
-                gone.append(path)
+            missing.add(path)
         elif on_disk != remembered.get(path):
             size, mtime_ns = on_disk
             kind = chd_type(library / path) if path.lower().endswith(".chd") else None
@@ -301,10 +351,10 @@ def _look_at_disk(conn: sqlite3.Connection, library: Path, roms: list[RomMRom]) 
     # Files RomM no longer lists keep their hash for as long as they exist on
     # disk, so re-adding a platform later does not mean hashing it all again.
     for path in remembered:
-        if path not in listed_by_romm and stat_file(library / path) is None:
+        if path not in listed_by_romm and (not is_safe_relative(path) or stat_file(library / path) is None):
             gone.append(path)
 
-    return changed, gone
+    return changed, gone, frozenset(missing)
 
 
 # ----- Helpers for step 3: save ----------------------------------------------
@@ -429,3 +479,22 @@ def _finish_run(conn: sqlite3.Connection, run_id: int, status: str,
     with transaction(conn):
         conn.execute("UPDATE sync_runs SET finished_at = ?, status = ?, stats = ?, error = ? WHERE id = ?",
                      (int(time.time()), status, stats, error, run_id))
+
+
+# ----- Only one sync at a time -------------------------------------------------
+
+# An exclusive lock on a file in the config folder. The operating system drops
+# it when the process ends, so a crash never leaves a stale lock behind.
+class _SyncLock:
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(path, "a")
+        try:
+            fcntl.flock(self._file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self._file.close()
+            raise SyncBusyError("another sync is already running") from None
+
+    def release(self) -> None:
+        fcntl.flock(self._file, fcntl.LOCK_UN)
+        self._file.close()

@@ -8,7 +8,16 @@ TESTED_MAJOR_VERSIONS = (5,)
 
 
 class RomMError(Exception):
-    """RomM could not be reached or refused the request. The message is ready to show."""
+    """RomM could not be reached or refused the request. The message is ready to show.
+
+    `unreachable` is True when RomM did not answer at all (network error, or a
+    5xx from RomM or a proxy in front of it): something that may fix itself,
+    unlike a rejected token.
+    """
+
+    def __init__(self, message: str, unreachable: bool = False) -> None:
+        super().__init__(message)
+        self.unreachable = unreachable
 
 
 class _Model(BaseModel):
@@ -91,14 +100,16 @@ class RomMClient:
         try:
             response = await self._client.get(path, params=params)
         except httpx.HTTPError as error:
-            raise RomMError(f"cannot reach RomM at {self._client.base_url}: {error or type(error).__name__}") from error
+            raise RomMError(f"cannot reach RomM at {self._client.base_url}: {_describe(error)}",
+                            unreachable=True) from error
         if response.status_code == 401:  # Unauthorized
             raise RomMError("RomM rejected the API token (401). Check ROMM_API_TOKEN.")
         if response.status_code == 403:  # Forbidden (No Perms)
             raise RomMError(
                 f"the API token is not allowed to read {path} (403). It needs the scopes roms.read and platforms.read.")
         if response.status_code != 200:
-            raise RomMError(f"RomM answered {response.status_code} for {path}")
+            raise RomMError(f"RomM answered {response.status_code} for {path}",
+                            unreachable=response.status_code >= 500)
         try:
             return response.json()
         except ValueError as error:
@@ -136,7 +147,8 @@ class RomMClient:
         while True:
             page = await self.roms_page(platform_id, limit=page_size, offset=len(roms))
             roms += page.items
-            if not page.items or len(roms) >= (page.total or 0):
+            # A short page is the last one. `total` is only trusted when RomM sends it.
+            if len(page.items) < page_size or (page.total is not None and len(roms) >= page.total):
                 return roms
 
     # Whether RomM has an image under /assets (covers), and its size in bytes if RomM says.
@@ -158,7 +170,7 @@ class RomMClient:
         try:
             return await self._client.request(method, path)
         except httpx.HTTPError as error:
-            raise RomMError(f"cannot fetch {path} from RomM: {error or type(error).__name__}") from error
+            raise RomMError(f"cannot fetch {path} from RomM: {_describe(error)}", unreachable=True) from error
 
 
 # Validate the structure of our models
@@ -175,3 +187,8 @@ def _parse(path: str, build):
 def is_tested_version(version: str) -> bool:
     major = version.split(".", 1)[0]
     return major.isdigit() and int(major) in TESTED_MAJOR_VERSIONS
+
+
+# An exception's message, or its type when the message is empty (a timeout often has none)
+def _describe(error: Exception) -> str:
+    return str(error) or type(error).__name__

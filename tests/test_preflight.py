@@ -113,3 +113,19 @@ def test_unreachable_romm_fails(settings):
 
     report = run(settings, httpx.MockTransport(refuse))
     assert not report.passed and "cannot reach RomM" in messages(report, FAIL)[0]
+
+
+def test_serve_starts_when_romm_is_unreachable(settings):
+    def refuse(request):
+        raise httpx.ConnectError("connection refused")
+
+    platform_map, _ = load_platform_map(settings.config_path)
+    report = asyncio.run(run_preflight(settings, platform_map, httpx.MockTransport(refuse), romm_required=False))
+    assert report.passed
+    assert "the sync retries until RomM answers" in messages(report, WARN)[0]
+
+
+def test_serve_still_fails_when_romm_rejects_the_token(settings):
+    platform_map, _ = load_platform_map(settings.config_path)
+    report = asyncio.run(run_preflight(settings, platform_map, fake_romm(status=401), romm_required=False))
+    assert not report.passed and "rejected the API token" in messages(report, FAIL)[0]

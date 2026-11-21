@@ -14,10 +14,13 @@ APP_BIN="ticorom"
 
 # If run as root, fix permissions and drop privileges
 if [ "$(id -u)" = "0" ]; then
-    # Ensure config and cache directories exist and match PUID/PGID
+    # Ensure config and cache directories exist and match PUID/PGID.
+    # Everything inside them too: after PUID/PGID change, or after a command was
+    # run as root (e.g. `docker compose exec`), files can belong to someone else.
+    # Only files with the wrong owner are touched, so this stays fast.
     for dir in "$CONFIG_PATH" "$CACHE_PATH"; do
         mkdir -p "$dir"
-        chown "$PUID:$PGID" "$dir"
+        find "$dir" \( ! -user "$PUID" -o ! -group "$PGID" \) -exec chown -h "$PUID:$PGID" {} +
     done
 
     # Drop privileges and execute the application

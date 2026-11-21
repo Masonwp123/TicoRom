@@ -76,3 +76,14 @@ def test_migration_2_adds_covers_to_an_existing_database(tmp_path):
     conn = connect(path)
     assert "cover_large_path" in [row[1] for row in conn.execute("PRAGMA table_info(roms)")]
     assert conn.execute("SELECT count(*) FROM platforms").fetchone()[0] == 1
+
+
+def test_a_database_owned_by_another_user_is_explained(tmp_path):
+    path = tmp_path / "ticorom.db"
+    migrate(path)
+    path.chmod(0o444)   # as if PUID changed: the file can no longer be written
+    try:
+        with pytest.raises(DatabaseError, match="Check PUID and PGID"):
+            migrate(path)
+    finally:
+        path.chmod(0o644)

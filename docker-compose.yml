@@ -1,4 +1,6 @@
-# TicoRom. Settings come from the .env file next to this one (see .env.example).
+# TicoRom. APP_URL, ROMM_URL and ROMM_API_TOKEN come from the .env file next to
+# this one (see .env.example); the rest is set below. Change the library path
+# under `volumes` to the folder RomM uses as its library.
 #
 #   docker compose up -d --build     build and start
 #   docker compose logs -f           watch the log, including the startup checks
@@ -28,8 +30,6 @@ services:
       INSTANCE_SLUG: "home"
       # How often the instance syncs with RomM
       SYNC_INTERVAL_MINUTES: 60
-      # How large the cache can grow
-      CACHE_MAX_GB: 10
       # Skip over 4GB files, as FAT32 cannot write them
       SKIP_FILES_OVER_4GIB: true
     volumes:

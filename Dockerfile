@@ -7,8 +7,10 @@ LABEL description="Tico RomM Bridge"
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHON_COLORS=0 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -17,10 +19,16 @@ RUN apk update && apk upgrade --no-cache && \
     apk add --no-cache \
     util-linux
 
-# Copy application files and use pip to install python dependencies from pyproject.toml
-COPY pyproject.toml ./
+# uv installs exactly the versions in uv.lock, so every build of a commit gets the same dependencies
+COPY --from=ghcr.io/astral-sh/uv:0.13.8 /uv /usr/local/bin/uv
+
+# Dependencies first: this layer is reused as long as uv.lock does not change
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --no-install-project --no-cache
+
+# Then the application itself
 COPY src ./src
-RUN pip install .
+RUN uv sync --locked --no-dev --no-editable --no-cache
 
 # Copy entrypoint and make executable
 COPY entrypoint.sh /entrypoint.sh

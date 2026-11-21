@@ -4,7 +4,7 @@ import hashlib
 import os
 import struct
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 CHUNK = 1024 * 1024
 GIB = 1024 ** 3
@@ -20,6 +20,14 @@ class HashCancelled(Exception):
 
 
 # (size, mtime in nanoseconds), or None if the path is not a readable file.
+# Whether a path from RomM stays inside the library: relative, and no ".." anywhere.
+# RomM is trusted for metadata, but a broken or compromised RomM must not be able
+# to make the bridge serve files from elsewhere on the machine.
+def is_safe_relative(path: str) -> bool:
+    parts = PurePosixPath(path).parts
+    return bool(parts) and not PurePosixPath(path).is_absolute() and ".." not in parts and "\\" not in path
+
+
 def stat_file(path: Path) -> tuple[int, int] | None:
     try:
         info = os.stat(path)

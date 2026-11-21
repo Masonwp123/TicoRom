@@ -153,8 +153,12 @@ async def _check_path_mapping(report: Report, romm: RomMClient, library: Path, p
     report.add(FAIL, "No published platform has a game yet, so the library path could not be checked against RomM.")
 
 
+# romm_required=False is for `serve`: if RomM cannot be reached (e.g. it is still
+# starting after a reboot), the bridge starts anyway and keeps serving the games
+# it already published; the sync retries until RomM answers. A rejected token or
+# an unexpected answer still fails, because waiting does not fix those.
 async def run_preflight(settings: Settings, platform_map: PlatformMap,
-                        transport: httpx.AsyncBaseTransport | None = None) -> Report:
+                        transport: httpx.AsyncBaseTransport | None = None, romm_required: bool = True) -> Report:
     report = Report()
 
     # Public address check, settings.py already checks if this is valid
@@ -211,6 +215,9 @@ async def run_preflight(settings: Settings, platform_map: PlatformMap,
             if settings.library_path.is_dir():
                 await _check_path_mapping(report, romm, settings.library_path, published)
     except RomMError as error:
-        report.add(FAIL, str(error))
+        if error.unreachable and not romm_required:
+            report.add(WARN, f"{error}. Serving the games published so far; the sync retries until RomM answers.")
+        else:
+            report.add(FAIL, str(error))
 
     return report

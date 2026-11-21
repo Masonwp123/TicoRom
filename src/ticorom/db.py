@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -128,6 +129,12 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 
 # Create or upgrade the database. Returns the schema version.
 def migrate(path: Path) -> int:
+    # SQLite opens a file it cannot write without complaint and fails only at the
+    # first write, with "attempt to write a readonly database". Say why up front.
+    for file in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        if file.exists() and not os.access(file, os.W_OK):
+            raise DatabaseError(f"{file} cannot be written by this user (uid {os.getuid()}). "
+                                "Check PUID and PGID: they must own the config folder and the files in it.")
     try:
         conn = connect(path)
     except sqlite3.Error as error:
