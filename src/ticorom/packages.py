@@ -130,13 +130,17 @@ def decide(rom_id: int, rom_fs_name: str, files: list[GameFile], entry: Platform
 # The name the file gets on the SD card. A file inside a game's folder (e.g.
 # "Game A/disc.chd") takes the folder's name ("Game A.chd"): many games use the
 # same inner file name, and they all install into one console folder.
+# RomM's is_top_level does not tell these apart (it is also true for a file
+# directly inside the game's folder), so compare names: a game stored as a single
+# file has the same name as that file.
 def _filename(rom_id: int, rom_fs_name: str, file: GameFile | None) -> str:
+    rom_name = PurePosixPath(rom_fs_name).name
     if file is None:
-        name = PurePosixPath(rom_fs_name).name
-    elif file.is_top_level:
+        name = rom_name
+    elif file.file_name == rom_name:
         name = file.file_name
     else:
-        name = PurePosixPath(rom_fs_name).name + PurePosixPath(file.file_name).suffix
+        name = rom_name + PurePosixPath(file.file_name).suffix
     return safe_filename(name, f"rom-{rom_id}{PurePosixPath(name).suffix}")
 
 

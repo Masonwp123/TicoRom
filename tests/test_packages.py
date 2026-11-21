@@ -93,10 +93,16 @@ def test_package_id():
     assert package_id("home", 4821) == "romm-home-4821"
 
 
-def test_a_game_inside_a_folder_is_named_after_the_folder(make_settings):
-    files = [GameFile("roms/ps2/Game A/disc.chd", "disc.chd", None, is_top_level=False)]
-    package = decide(42, "Game A", files, MAP.platforms["ps2"], MAP,
-                     {"roms/ps2/Game A/disc.chd": FileFact(1024, SHA, "cd")}, make_settings())
+# RomM marks a file directly inside the game's folder as top-level too, so both
+# values must give the folder's name
+@pytest.mark.parametrize("path, is_top_level", [
+    ("roms/ps2/Game A/disc.chd", True),
+    ("roms/ps2/Game A/sub/disc.chd", False),
+])
+def test_a_game_inside_a_folder_is_named_after_the_folder(make_settings, path, is_top_level):
+    files = [GameFile(path, "disc.chd", None, is_top_level=is_top_level)]
+    package = decide(42, "Game A", files, MAP.platforms["ps2"], MAP, {path: FileFact(1024, SHA, "cd")},
+                     make_settings())
     assert package.status == PUBLISHED and package.filename == "Game A.chd"
 
 

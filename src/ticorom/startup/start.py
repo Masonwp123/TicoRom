@@ -193,6 +193,10 @@ def main() -> None:
 
     print(f"Starting TicoRom {__version__}:")
 
+    # On shutdown, give open downloads 5 seconds, then close them: Docker kills the
+    # container 10 seconds after `docker stop`, and the shutdown steps (stopping a
+    # running sync cleanly) must get their turn first. tico resumes the download.
     uvicorn.run(
-        create_app(settings, platform_map, database, syncer), host=args.host, port=args.port, log_level="info"
+        create_app(settings, platform_map, database, syncer), host=args.host, port=args.port, log_level="info",
+        timeout_graceful_shutdown=5,
     )
