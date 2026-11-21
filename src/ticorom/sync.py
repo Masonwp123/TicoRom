@@ -8,6 +8,7 @@ import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -248,8 +249,11 @@ class Syncer:
 
 # Sync now, then every SYNC_INTERVAL_MINUTES, until the app shuts down.
 # A failed sync is logged and simply tried again at the next interval.
-async def sync_forever(syncer: Syncer, interval_minutes: int, stop: threading.Event) -> None:
+async def sync_forever(syncer: Syncer, interval_minutes: int, stop: threading.Event,
+                       wake: asyncio.Event | None = None) -> None:
+    wake = wake or asyncio.Event()
     while not stop.is_set():
+        wake.clear()
         try:
             await syncer.run(stop)
         except asyncio.CancelledError:
@@ -264,7 +268,10 @@ async def sync_forever(syncer: Syncer, interval_minutes: int, stop: threading.Ev
         except Exception:
             # A bug: log the full traceback
             log.exception("Sync failed unexpectedly. Retrying in %d minutes.", interval_minutes)
-        await asyncio.sleep(interval_minutes * 60)
+        # Wait for the next interval, or less if something sets `wake`
+        # (a download found a file that changed since it was hashed)
+        with suppress(TimeoutError):
+            await asyncio.wait_for(wake.wait(), timeout=interval_minutes * 60)
 
 
 # ----- Helpers for step 2: look at the disk ----------------------------------

@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 
-from ticorom import __version__, covers, tokens
+from ticorom import __version__, covers, downloads, tokens
 from ticorom.db import Database
 from ticorom.index import IndexFiles
 from ticorom.startup.platforms import PlatformMap
@@ -19,6 +19,7 @@ from ticorom.startup.settings import Settings
 from ticorom.sync import Syncer, sync_forever
 
 TOKEN_IN_PATH = re.compile(r"^/r/[^/]+")
+log = logging.getLogger("ticorom.downloads")
 
 
 # Replace the token in access-log lines: logs are often kept and shared, tokens act as passwords.
@@ -36,6 +37,8 @@ class HideTokens(logging.Filter):
 def create_app(settings: Settings, platform_map: PlatformMap, database: Database,
                syncer: Syncer | None = None) -> FastAPI:
     index_files = IndexFiles(settings)
+    # Set by a download that finds a changed file, so the next sync starts right away
+    wake_sync = asyncio.Event()
 
     # Run the sync in the background for as long as the app runs
     @asynccontextmanager
@@ -45,7 +48,8 @@ def create_app(settings: Settings, platform_map: PlatformMap, database: Database
             access_log.addFilter(HideTokens())
 
         stop = threading.Event()
-        task = asyncio.create_task(sync_forever(syncer, settings.sync_interval_minutes, stop)) if syncer else None
+        task = (asyncio.create_task(sync_forever(syncer, settings.sync_interval_minutes, stop, wake_sync))
+                if syncer else None)
         yield
         stop.set()  # also stops hashing that is still running in worker threads
         if task:
@@ -57,6 +61,7 @@ def create_app(settings: Settings, platform_map: PlatformMap, database: Database
                   lifespan=lifespan)
     app.state.settings = settings
     app.state.platform_map = platform_map
+    app.state.wake_sync = wake_sync
 
     @app.get("/v1/health")
     async def health() -> dict:
@@ -103,5 +108,26 @@ def create_app(settings: Settings, platform_map: PlatformMap, database: Database
             raise HTTPException(status_code=404)
         return FileResponse(path, media_type=covers.CONTENT_TYPES[name.rsplit(".", 1)[1]],
                             headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+    # A game file. Every refusal is a plain 404, so the address gives nothing away.
+    @app.api_route("/r/{token}/dl/{package_id}/{version}/{filename}", methods=["GET", "HEAD"])
+    async def download(token: str, package_id: str, version: str, filename: str) -> FileResponse:
+        found_token = await database.run(lambda conn: tokens.authenticate(conn, token))
+        if found_token is None:
+            raise HTTPException(status_code=404)
+        game = await database.run(lambda conn: downloads.find(conn, package_id, version))
+        if game is None or game.filename != filename or not found_token.allows(game.tico_slug):
+            raise HTTPException(status_code=404)
+
+        # The file must still be the one that was hashed (DESIGN.md section 6.6)
+        info = await asyncio.to_thread(downloads.unchanged_stat, settings.library_path, game)
+        if info is None:
+            log.warning("Refused a download of %s: the file is missing or changed since it was hashed. "
+                        "Syncing now.", game.path)
+            wake_sync.set()
+            raise HTTPException(status_code=404)
+
+        return downloads.LibraryFile(settings.library_path / game.path, stat_result=info,
+                                     media_type="application/octet-stream")
 
     return app

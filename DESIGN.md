@@ -177,7 +177,7 @@ tico checks `sha256` after every download (*observed*), so a corrupt or changed 
 
 The bridge guards against this without hashing on every request:
 
-- **Compare `stat` at request time.** Before sending any bytes, compare the file's size and mtime with the values recorded when it was hashed. On a mismatch, answer 404 and queue that ROM for re-hashing and an index rebuild. This costs one `stat` call.
+- **Compare `stat` at request time.** Before sending any bytes, compare the file's size and mtime with the values recorded when it was hashed. On a mismatch, answer 404 and wake the background sync so it starts at once instead of at the next interval; the sync sees the changed size or mtime, re-hashes the file and rebuilds the index. This costs one `stat` call. The same 404 answers an address whose version or file name is no longer current, and a token not allowed to see that console.
 - **Put the version in the download URL** (`/dl/<package-id>/<version>/<filename>`). tico resumes with `Range` but sends no `If-Range` (*observed*), so it cannot tell that a file changed between attempts. With a versioned URL, a partial download of the old file can only resume against an address that now answers 404.
 - **Do not hash the file on each request.** Hashing reads the whole file before the first byte goes out: seconds on a fast local disk, minutes for a multi-GB file on slower storage. tico also makes a new request for every resume and retry, so the cost would repeat.
 
@@ -642,7 +642,7 @@ Still open:
 ## 12. Milestones
 
 1. ~~Spikes A–H~~ Done (§11). Remaining before the MVP: a filled-in platform map for the consoles actually in the library. The download-speed experiments (§11) can run alongside.
-2. **MVP:** RomM client, database (§6.8), syncer, hash cache, `ticorom token` command, file mode (which covers the whole library in use, §6.7), combined and per-platform indexes, tokenized and versioned download endpoint with `Range` and the `stat` check (§6.6), skip rules (files ≥ 4 GiB, CHD variants), HTTPS deployment behind a reverse proxy.
+2. **MVP** (built; download endpoint awaiting a test on hardware): RomM client, database (§6.8), syncer, hash cache, `ticorom token` command, file mode (which covers the whole library in use, §6.7), combined and per-platform indexes, tokenized and versioned download endpoint with `Range` and the `stat` check (§6.6), skip rules (files ≥ 4 GiB, CHD variants), HTTPS deployment behind a reverse proxy.
 3. **Extract mode and bundles** for multi-file games, with `extract_to_folder` on name collisions. (Covers and `.json.gz` are done.)
 4. **Admin surface:** sync status, skipped-ROM report, token management (CLI is enough).
 5. **Later:** virtual stored zips for bundles, collection-based repositories, firmware/BIOS packages, optional `magnet` variants for large files, background re-hash of the library.

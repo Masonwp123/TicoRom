@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import os
+import threading
 
 import httpx
 import pytest
@@ -254,3 +255,28 @@ def test_a_game_without_a_cover_has_no_icon(env):
     env.sync()
     combined = json.loads((env.settings.cache_path / "index" / "_all.json").read_text())
     assert "icon" not in combined["packages"][0]
+
+
+def test_the_background_loop_syncs_early_when_woken():
+    from ticorom.sync import sync_forever
+
+    class CountingSyncer:
+        runs = 0
+
+        async def run(self, stop):
+            self.runs += 1
+
+    async def scenario():
+        syncer, stop, wake = CountingSyncer(), threading.Event(), asyncio.Event()
+        loop = asyncio.create_task(sync_forever(syncer, 60, stop, wake))   # interval: an hour
+        await asyncio.sleep(0.05)
+        assert syncer.runs == 1
+        wake.set()                                                         # e.g. a download found a changed file
+        await asyncio.sleep(0.05)
+        assert syncer.runs == 2
+        stop.set()
+        loop.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await loop
+
+    asyncio.run(scenario())
