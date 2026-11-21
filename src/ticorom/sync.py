@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 
-from ticorom import packages
+from ticorom import index, packages
 from ticorom.db import Database, transaction
 from ticorom.library import GIB, HashCancelled, chd_type, sha256_file, stat_file
 from ticorom.romm import RomMClient, RomMError, RomMPlatform, RomMRom
@@ -157,12 +157,13 @@ class Syncer:
         with self.database.connection() as conn:
             # Step 2
             changed, gone = _look_at_disk(conn, self.settings.library_path, roms)
-            # Step 3
+            # Step 3, then write the index files tico reads
             self._save(conn, platforms, roms, changed, gone)
+            index.build(conn, self.settings)
             # Step 4
             self._hash_pending(conn, stop, result)
             # Publish whatever was hashed since the last republish
-            final_packages = packages.rebuild(conn, self.platform_map, self.settings)
+            final_packages = self._publish(conn)
 
         _count_packages(final_packages, result)
         result.seconds = time.time() - started
@@ -178,6 +179,12 @@ class Syncer:
             _replace_romm_mirror(conn, platforms, roms)
             # Decide what to publish. Files without a hash yet become "pending".
             packages.write(conn, packages.plan(conn, self.platform_map, self.settings))
+
+    # Decide again what to publish now that more files are hashed, and rewrite the index files.
+    def _publish(self, conn: sqlite3.Connection) -> list[packages.Package]:
+        decided = packages.rebuild(conn, self.platform_map, self.settings)
+        index.build(conn, self.settings)
+        return decided
 
     # ----- Step 4: hash ----------------------------------------------------------
 
@@ -211,13 +218,14 @@ class Syncer:
                     _save_hash(conn, outcome)
                     result.hashed_files += 1
                     result.hashed_bytes += outcome.size
+                    log.info("Successfully hashed %s", outcome.path)
                 else:
                     result.hash_failures += 1
                     log.warning("Could not hash %s: %s", outcome.path, outcome.problem)
 
                 # Publish what is ready now, rather than only at the end
                 if time.monotonic() - last_republish >= REPUBLISH_EVERY_SECONDS:
-                    packages.rebuild(conn, self.platform_map, self.settings)
+                    self._publish(conn)
                     last_republish = time.monotonic()
                     log.info("Hashed %d of %d files (%.1f of %.1f GiB)", result.hashed_files, len(todo),
                              result.hashed_bytes / GIB, total_bytes / GIB)

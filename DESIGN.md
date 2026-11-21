@@ -132,7 +132,7 @@ A sync job (interval, plus a manual `POST /admin/sync`) does the work:
 1. `GET /api/platforms`, then page through `GET /api/roms` for each platform that has a map entry (`platform_ids`, `with_files=true`, `limit`, `offset`; the index extras `with_char_index`, `with_filter_values` and `with_rom_id_index` switched off). Excluded platforms are never requested.
 2. Replace the RomM mirror tables with what RomM returned (§6.8), in one transaction.
 3. For new or changed files (size or mtime differs from `file_facts`), compute SHA-256 from the mount. Hashing runs in a thread pool; the first sync of a large library will take a while and should report progress.
-4. Run the mapper to rebuild `packages`, then write `index.json` + `index.json.gz` atomically (write temp, rename).
+4. Run the mapper to rebuild `packages`, then write the index files atomically (write temp, rename) to `CACHE_PATH/index/`: `_all.json` for every console and `<tico slug>.json` per console. This repeats every 30 seconds while hashing, so games appear as they are hashed. The `.json.gz` variants are compressed on request, because the token is only filled in then (§6.8), and the result is kept in a small memory cache.
 
 Requests for the index are then a static file read plus one string substitution for the token (§6.8). tico never waits on RomM.
 

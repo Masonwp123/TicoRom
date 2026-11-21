@@ -29,6 +29,22 @@ You need Docker with Compose, a RomM instance, and the folder RomM uses as its l
 
 3. Point your HTTPS reverse proxy at `http://<this machine>:8080`. tico only connects over HTTPS. DESIGN.md Appendix A has proxy settings.
 
+4. Create an access token and add the repository in tico:
+
+   ```bash
+   docker compose run --rm ticorom token add switch
+   ```
+
+   This prints the token once, with the address to enter in tico (Store > Sources > Add repository): `https://<your address>/r/<token>/index.json.gz` for every console, or `.../r/<token>/<console>/index.json.gz` for one. Keep the token private; anyone with it can see and download the games. Games appear as the first sync hashes them.
+
+Tokens:
+
+```bash
+docker compose run --rm ticorom token add <name> [--platforms gba,snes]   # create; --platforms limits what it can see
+docker compose run --rm ticorom token list                               # every token and when it was last used
+docker compose run --rm ticorom token revoke <name>                      # stop a token from working
+```
+
 Other commands:
 
 ```bash

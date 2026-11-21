@@ -200,3 +200,13 @@ def test_a_file_listed_twice_by_romm_is_kept_once(env):
     env.romm.roms[1][1]["files"][0]["id"] = 999
     env.sync()
     assert len(env.query("SELECT * FROM rom_files")) == 1
+
+
+def test_a_sync_writes_the_index_files(env):
+    env.put("roms/gba/Quest.7z", b"data")
+    env.romm.add(7, 1, "Quest.7z")
+    env.sync()
+    folder = env.settings.cache_path / "index"
+    combined = json.loads((folder / "_all.json").read_text())
+    assert [p["id"] for p in combined["packages"]] == ["romm-home-7"]
+    assert (folder / "gba.json").exists() and not (folder / "ps2.json").exists()
