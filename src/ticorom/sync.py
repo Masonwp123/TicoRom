@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 
-from ticorom import index, packages
+from ticorom import covers, index, packages
 from ticorom.db import Database, transaction
 from ticorom.library import GIB, HashCancelled, chd_type, sha256_file, stat_file
 from ticorom.romm import RomMClient, RomMError, RomMPlatform, RomMRom
@@ -103,13 +103,14 @@ class Syncer:
         log.info("Sync started")
 
         try:
-            # Step 1, on the event loop
-            platforms, roms = await self._fetch()
+            # Step 1, on the event loop: the games, and a cover for each
+            platforms, roms, game_covers = await self._fetch()
             log.info("RomM lists %d games on %d published platforms", len(roms), len(platforms))
 
             # Steps 2 to 4, in a worker thread
             try:
-                result = await asyncio.to_thread(self._look_save_and_hash, platforms, roms, stop, started)
+                result = await asyncio.to_thread(self._look_save_and_hash, platforms, roms, game_covers,
+                                                 stop, started)
             except asyncio.CancelledError:
                 # Cancelling to await does not stop the thread itself. The thread
                 # checks this flag while hashing and stops within a second or so.
@@ -137,8 +138,10 @@ class Syncer:
 
     # ----- Step 1: fetch ---------------------------------------------------------
 
-    # Published platforms and all their games. Other platforms are never requested.
-    async def _fetch(self) -> tuple[list[RomMPlatform], list[RomMRom]]:
+    # Published platforms, all their games, and each game's cover. Other platforms are never requested.
+    # Cover images are downloaded into the cache folder now; which file belongs to
+    # which game is only saved to the database in step 3.
+    async def _fetch(self) -> tuple[list[RomMPlatform], list[RomMRom], list[covers.Cover]]:
         token = self.settings.romm_api_token.get_secret_value()
         async with RomMClient(self.settings.romm_url, token, self.transport) as romm:
             published = [platform for platform in await romm.platforms()
@@ -146,20 +149,23 @@ class Syncer:
             roms: list[RomMRom] = []
             for platform in published:
                 roms += await romm.all_roms(platform.id)
-        return published, roms
+            known = await self.database.run(covers.load_known)
+            game_covers = await covers.fetch_all(romm, roms, known, self.settings.cache_path)
+        return published, roms, game_covers
 
     # ----- Steps 2 to 4 (worker thread) ------------------------------------------
 
     def _look_save_and_hash(self, platforms: list[RomMPlatform], roms: list[RomMRom],
-                            stop: threading.Event, started: float) -> SyncResult:
+                            game_covers: list[covers.Cover], stop: threading.Event, started: float) -> SyncResult:
         result = SyncResult(platforms=len(platforms), roms=len(roms))
 
         with self.database.connection() as conn:
             # Step 2
             changed, gone = _look_at_disk(conn, self.settings.library_path, roms)
-            # Step 3, then write the index files tico reads
-            self._save(conn, platforms, roms, changed, gone)
+            # Step 3, then write the index files tico reads and drop covers nothing uses
+            self._save(conn, platforms, roms, game_covers, changed, gone)
             index.build(conn, self.settings)
+            covers.remove_unused(self.settings.cache_path, game_covers)
             # Step 4
             self._hash_pending(conn, stop, result)
             # Publish whatever was hashed since the last republish
@@ -173,10 +179,11 @@ class Syncer:
 
     # Write the new state in one transaction: all of it, or none of it.
     def _save(self, conn: sqlite3.Connection, platforms: list[RomMPlatform], roms: list[RomMRom],
-              changed: list[FileOnDisk], gone: list[str]) -> None:
+              game_covers: list[covers.Cover], changed: list[FileOnDisk], gone: list[str]) -> None:
         with transaction(conn):
             _update_file_facts(conn, changed, gone)
             _replace_romm_mirror(conn, platforms, roms)
+            covers.write(conn, game_covers)
             # Decide what to publish. Files without a hash yet become "pending".
             packages.write(conn, packages.plan(conn, self.platform_map, self.settings))
 
@@ -315,8 +322,9 @@ def _replace_romm_mirror(conn: sqlite3.Connection, platforms: list[RomMPlatform]
     conn.executemany("INSERT INTO platforms (id, slug, fs_slug, name) VALUES (?, ?, ?, ?)",
                      [(p.id, p.slug, p.fs_slug, p.name or p.fs_slug) for p in platforms])
     conn.executemany("""
-        INSERT INTO roms (id, platform_id, name, fs_name, summary, genres, release_date, cover_path, romm_updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO roms (id, platform_id, name, fs_name, summary, genres, release_date, cover_path,
+                          cover_large_path, romm_updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [_rom_row(rom) for rom in roms])
     conn.executemany("""
         INSERT INTO rom_files (id, rom_id, path, file_name, is_top_level, category, archive_members)
@@ -338,6 +346,7 @@ def _rom_row(rom: RomMRom) -> tuple:
         json.dumps(genres),
         release_ms // 1000 if release_ms else None,     # stored as seconds
         rom.path_cover_small,
+        rom.path_cover_large,
         rom.updated_at,
     )
 

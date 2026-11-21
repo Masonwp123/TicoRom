@@ -31,6 +31,7 @@ class FakeRomM:
         self.roms: dict[int, list[dict]] = {1: [], 2: [], 3: []}
         self.down = False
         self.requests: list[httpx.Request] = []
+        self.assets: dict[str, bytes] = {}   # cover images, by path
 
     def add(self, rom_id, platform_id, file_name, **extra):
         folder = {1: "gba", 2: "ps2", 3: "ps3"}[platform_id]
@@ -58,6 +59,11 @@ class FakeRomM:
             roms = self.roms[int(request.url.params["platform_ids"])]
             offset, limit = int(request.url.params["offset"]), int(request.url.params["limit"])
             return httpx.Response(200, json={"items": roms[offset:offset + limit], "total": len(roms)})
+        if request.url.path in self.assets:
+            data = self.assets[request.url.path]
+            if request.method == "HEAD":
+                return httpx.Response(200, headers={"Content-Length": str(len(data))})
+            return httpx.Response(200, content=data)
         return httpx.Response(404)
 
 
@@ -210,3 +216,41 @@ def test_a_sync_writes_the_index_files(env):
     combined = json.loads((folder / "_all.json").read_text())
     assert [p["id"] for p in combined["packages"]] == ["romm-home-7"]
     assert (folder / "gba.json").exists() and not (folder / "ps2.json").exists()
+
+
+def test_a_sync_fetches_covers_and_lists_them_as_icons(env):
+    png = b"\x89PNG\r\n\x1a\n" + b"cover"
+    env.romm.assets["/assets/romm/resources/roms/1/7/cover/small.png"] = png
+    env.put("roms/gba/Quest.7z", b"data")
+    env.romm.add(7, 1, "Quest.7z")
+    env.sync()
+
+    [cover] = env.query("SELECT * FROM covers")
+    assert cover["rom_id"] == 7 and cover["file"].endswith(".png")
+    assert (env.settings.cache_path / "covers" / cover["file"]).read_bytes() == png
+    combined = json.loads((env.settings.cache_path / "index" / "_all.json").read_text())
+    assert combined["packages"][0]["icon"] == f"https://tico.example/r/@@TICOROM_TOKEN@@/img/{cover['file']}"
+
+    # Nothing changed: the cover is not downloaded again
+    env.romm.requests.clear()
+    env.sync()
+    assert not [r for r in env.romm.requests if r.method == "GET" and r.url.path.startswith("/assets/")]
+
+
+def test_covers_of_removed_games_are_deleted(env):
+    env.romm.assets["/assets/romm/resources/roms/1/7/cover/small.png"] = b"\x89PNG\r\n\x1a\nx"
+    env.put("roms/gba/Quest.7z", b"data")
+    env.romm.add(7, 1, "Quest.7z")
+    env.sync()
+    env.romm.remove(7)
+    env.sync()
+    assert env.query("SELECT * FROM covers") == []
+    assert list((env.settings.cache_path / "covers").iterdir()) == []
+
+
+def test_a_game_without_a_cover_has_no_icon(env):
+    env.put("roms/gba/Quest.7z", b"data")
+    env.romm.add(7, 1, "Quest.7z")
+    env.sync()
+    combined = json.loads((env.settings.cache_path / "index" / "_all.json").read_text())
+    assert "icon" not in combined["packages"][0]

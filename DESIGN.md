@@ -38,7 +38,7 @@ Package fields relevant to ROM delivery:
 | `category` | `app` (default), `game`, `port`, `soundpack`. |
 | `tags` | Max two. A console tag (name or tico slug) puts the game on that console's shelf. *Observed:* tico's ROM folder names work as tags (§8). |
 | `version` | Compared as text; **any change** offers an update. |
-| `icon`, `banner`, `screenshots` | Must be `https://`. Max 8 screenshots. |
+| `icon`, `banner`, `screenshots` | Must be `https://`. Max 8 screenshots. *Observed:* PNG, JPEG (also progressive), WebP, GIF and BMP display; AVIF does not. `banner` and `screenshots` appear on the package page (§11, cover test). |
 | `type` | `zip` (default), `nro`, `module`, `rom`. This design only uses `zip` (constraint 1). |
 | `url` | `http://` or `https://` per the guide. *Observed:* only `https://` worked (§6.4). |
 | `size` | Bytes. For `rom` it is required and must match exactly. *Observed:* not enforced for `type: zip`; a package whose `size` was about 10% too small still installed. |
@@ -241,7 +241,8 @@ CREATE TABLE roms (
   summary         TEXT,
   genres          TEXT NOT NULL DEFAULT '[]',   -- JSON list
   release_date    INTEGER,                -- unix seconds
-  cover_path      TEXT,                   -- RomM /assets path, for the cover proxy
+  cover_path      TEXT,                   -- RomM /assets path of the small cover
+  cover_large_path TEXT,                  -- ... and of the large one (migration 2)
   romm_updated_at TEXT NOT NULL
 );
 
@@ -299,6 +300,15 @@ CREATE TABLE tokens (
   revoked_at      INTEGER,
   last_used_at    INTEGER
 );
+
+-- Migration 2. No foreign key to roms: roms is replaced on every sync, and a
+-- cascade would throw every cover away each time.
+CREATE TABLE covers (
+  rom_id          INTEGER PRIMARY KEY,
+  source          TEXT NOT NULL,          -- RomM's cover paths when chosen; a change means fetch again
+  file            TEXT,                   -- file in CACHE_PATH/covers; NULL if RomM has no usable cover
+  fetched_at      INTEGER NOT NULL
+);
 ```
 
 Rules:
@@ -354,7 +364,7 @@ Plan: ship v1 with no support for bundles; later add size-capped LRU disk cache 
 | `type`, `extract` | Always `type: zip`. `extract: false` for the file mode; omitted for extract and bundle (§7.1). |
 | `version` | First 8 hex chars of the payload SHA-256. **Not** RomM's `updated_at`: a metadata rescan would then offer a pointless update for every game. |
 | `description`, `tagline` | Description: RomM summary (truncated). Tagline: the tags in the file name (e.g. `USA · Rev 1 · Disc 2`), so copies of the same game can be told apart (§9); otherwise the first genre and release year. |
-| `icon` | Cover image, proxied through the bridge at `/r/<token>/img/<rom id>.jpg` so it is HTTPS and needs no RomM login. |
+| `icon` | Cover image, served by the bridge at `/r/<token>/img/<rom id>-<fingerprint>.<ext>`, so it is HTTPS and RomM stays off the console's network. See "Covers" below. |
 | `url` | Bridge download URL. |
 | `size`, `sha256` | From the hash cache; for bundles, of the built zip. |
 | `install` | From the platform map, e.g. `tico/roms/snes`. |
@@ -365,6 +375,15 @@ Plan: ship v1 with no support for bundles; later add size-capped LRU disk cache 
 - `home` is a fine value for someone running one RomM. Two bridges that a user might add to the same console need different slugs.
 - Allowed characters are those of a package id: lowercase letters, digits, `.`, `_`, `-`. Keep it short; the whole id is capped at 64 characters. The bridge validates this at startup.
 - **Treat it as permanent.** tico tracks installed games and updates by id. Changing the slug changes every id, so tico would show every game as a new, uninstalled package.
+
+**Covers.** Fetched from RomM during the sync (step 1) and stored as files in `CACHE_PATH/covers/`; the `covers` table records which file belongs to which game (§6.8).
+
+- **Smallest usable cover wins.** RomM offers a small and a large cover. The bridge asks RomM for their sizes (`HEAD`) and downloads the smallest one tico can display.
+- **WebP copies count too.** RomM's optional WebP conversion task saves `small.webp` beside `small.png` and keeps the original. Its API keeps listing the `.png` path, and RomM's web page swaps the extension itself (`frontend/src/utils/covers.ts` in 5.4.1). The bridge does the same: for each cover path ending in `.png`, `.jpg` or `.jpeg`, the `.webp` path is a candidate too. In the library in use the WebP copies are about 5 times smaller: 86 GBA and SNES covers came to 2.1 MiB as WebP against 10.2 MiB as PNG.
+- **Format from the bytes, not the name.** PNG, JPEG, WebP, GIF and BMP are accepted. AVIF, which tico cannot show, and anything unrecognised are rejected, and the next cover is tried.
+- **Downloaded only when they change.** RomM puts a timestamp in its cover paths (`small.png?ts=...`). If both paths are unchanged and the file still exists, the cover is reused. One exception: a game whose cover is not yet WebP gets a quick `HEAD` for WebP copies each sync, because the conversion task adds them without changing the paths. A WebP cover is left alone with no request at all.
+- **A new cover gets a new address.** tico fetches each image once and sends no caching headers (§11), so the file name carries the first 8 hex characters of the image's SHA-256. The bridge serves covers with `Cache-Control: immutable`.
+- **Failures are not fatal.** If RomM cannot be reached for a cover, the previous cover stays (or the game has none) and the next sync tries again. Files no game uses are deleted after each sync.
 
 ### 7.4 Examples
 
@@ -592,7 +611,25 @@ Experiments, cheapest first:
 4. **Try wired networking** with the console docked and a USB LAN adapter.
 5. If the other route is fast and tico is slow, the limit is in tico's client and can't be fixed from the bridge. Report it upstream. A small default socket buffer is a candidate (Appendix A.1, *unverified*).
 
-Still open after both rounds:
+### Cover test
+
+Run on 2026-11-20 with `spikes/covers/`: one package per image variant, all made from one real RomM cover with the variant's name printed on it.
+
+| Variant | Displayed |
+|---|---|
+| PNG (RomM's format), PNG 1024×1024 at 1.6 MiB, PNG 64 px wide | Yes |
+| JPEG, progressive JPEG | Yes |
+| WebP lossy, WebP lossless | Yes |
+| GIF, BMP | Yes |
+| AVIF | **No** |
+| JPEG bytes behind a `.png` address; PNG with no extension | Yes: tico reads the image itself, not the name |
+| `banner` and `screenshots` | Shown on the package page |
+
+From the server log: tico fetched each image once, about five at a time, sending only `Accept: */*` and no conditional headers. It sent no request to revalidate an image during the test.
+
+Consequences: covers are accepted in any format but AVIF, the smallest one wins, and a changed cover must change its URL (§7.3, "Covers"). Banners and screenshots are a stretch goal (§12).
+
+Still open:
 
 - **Download speed**, above.
 - **Files ≥ 4 GiB on an exFAT card.**
@@ -606,10 +643,10 @@ Still open after both rounds:
 
 1. ~~Spikes A–H~~ Done (§11). Remaining before the MVP: a filled-in platform map for the consoles actually in the library. The download-speed experiments (§11) can run alongside.
 2. **MVP:** RomM client, database (§6.8), syncer, hash cache, `ticorom token` command, file mode (which covers the whole library in use, §6.7), combined and per-platform indexes, tokenized and versioned download endpoint with `Range` and the `stat` check (§6.6), skip rules (files ≥ 4 GiB, CHD variants), HTTPS deployment behind a reverse proxy.
-3. **Extract mode and bundles** for multi-file games, with `extract_to_folder` on name collisions; cover proxy; `.json.gz`.
+3. **Extract mode and bundles** for multi-file games, with `extract_to_folder` on name collisions. (Covers and `.json.gz` are done.)
 4. **Admin surface:** sync status, skipped-ROM report, token management (CLI is enough).
 5. **Later:** virtual stored zips for bundles, collection-based repositories, firmware/BIOS packages, optional `magnet` variants for large files, background re-hash of the library.
-6. **Stretch:** convert with `chdman` into the cache, e.g. DVD-type CHD → CD-type for PS2, or bin/cue → CHD. This doubles storage for converted games and needs the same cache as bundles.
+6. **Stretch:** `banner` and `screenshots` from RomM's large cover and screenshots (tico shows them on the package page; §11, cover test). Convert with `chdman` into the cache, e.g. DVD-type CHD → CD-type for PS2, or bin/cue → CHD. This doubles storage for converted games and needs the same cache as bundles.
 
 ## 13. Configuration sketch
 

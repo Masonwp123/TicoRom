@@ -71,3 +71,16 @@ def test_access_log_lines_hide_the_token():
                                ("10.0.0.2:5000", "GET", "/r/" + "a" * 32 + "/gba/index.json", "1.1", 200), None)
     HideTokens().filter(record)
     assert record.getMessage() == '10.0.0.2:5000 - "GET /r/<token>/gba/index.json HTTP/1.1" 200'
+
+
+def test_covers_are_served_to_tokens_only(app, make_settings):
+    client, token, _ = app
+    folder = make_settings().cache_path / "covers"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "7-aaaaaaaa.webp").write_bytes(b"RIFF\x00\x00\x00\x00WEBPdata")
+    response = client.get(f"/r/{token}/img/7-aaaaaaaa.webp")
+    assert response.status_code == 200 and response.headers["content-type"] == "image/webp"
+    assert "immutable" in response.headers["cache-control"]
+    assert client.get(f"/r/{'0' * 32}/img/7-aaaaaaaa.webp").status_code == 404
+    assert client.get(f"/r/{token}/img/7-bbbbbbbb.webp").status_code == 404
+    assert client.get(f"/r/{token}/img/..%2Fcovers.db").status_code == 404

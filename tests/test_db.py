@@ -5,7 +5,7 @@ import pytest
 
 from ticorom.db import MIGRATIONS, Database, DatabaseError, connect, migrate, transaction
 
-TABLES = {"platforms", "roms", "rom_files", "file_facts", "packages", "sync_runs", "tokens"}
+TABLES = {"platforms", "roms", "rom_files", "file_facts", "packages", "sync_runs", "tokens", "covers"}
 
 
 def test_migrate_creates_the_schema(tmp_path):
@@ -64,3 +64,15 @@ def test_run_uses_a_worker_thread_connection(tmp_path):
     count = asyncio.run(database.run(lambda conn: conn.execute("SELECT count(*) FROM tokens").fetchone()[0]))
     assert count == 0
     assert database.path == tmp_path / "ticorom.db"
+
+
+def test_migration_2_adds_covers_to_an_existing_database(tmp_path):
+    path = tmp_path / "ticorom.db"
+    conn = connect(path)
+    conn.executescript(f"BEGIN; {MIGRATIONS[0]} PRAGMA user_version = 1; COMMIT;")   # a version 1 database
+    conn.execute("INSERT INTO platforms VALUES (1, 'gba', 'gba', 'GBA')")
+    conn.close()
+    assert migrate(path) == 2
+    conn = connect(path)
+    assert "cover_large_path" in [row[1] for row in conn.execute("PRAGMA table_info(roms)")]
+    assert conn.execute("SELECT count(*) FROM platforms").fetchone()[0] == 1

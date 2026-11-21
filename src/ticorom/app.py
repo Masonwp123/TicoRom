@@ -9,8 +9,9 @@ import threading
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse
 
-from ticorom import __version__, tokens
+from ticorom import __version__, covers, tokens
 from ticorom.db import Database
 from ticorom.index import IndexFiles
 from ticorom.startup.platforms import PlatformMap
@@ -88,5 +89,19 @@ def create_app(settings: Settings, platform_map: PlatformMap, database: Database
     @app.get("/r/{token}/{console}/index.json.gz")
     async def one_console_gz(token: str, console: str) -> Response:
         return await index_response(token, console, gz=True)
+
+    # A game's cover. The file name holds a fingerprint of the image, so a given
+    # address never changes content and can be cached for good.
+    @app.get("/r/{token}/img/{name}")
+    async def cover(token: str, name: str) -> FileResponse:
+        if not covers.FILE_NAME_RE.fullmatch(name):
+            raise HTTPException(status_code=404)
+        if await database.run(lambda conn: tokens.authenticate(conn, token)) is None:
+            raise HTTPException(status_code=404)
+        path = settings.cache_path / covers.COVERS_DIR / name
+        if not path.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(path, media_type=covers.CONTENT_TYPES[name.rsplit(".", 1)[1]],
+                            headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
     return app

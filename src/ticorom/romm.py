@@ -51,6 +51,7 @@ class RomMRom(_Model):
     full_path: str
     summary: str | None = None
     path_cover_small: str | None = None
+    path_cover_large: str | None = None
     has_simple_single_file: bool = False
     has_nested_single_file: bool = False
     has_multiple_files: bool = False
@@ -137,6 +138,27 @@ class RomMClient:
             roms += page.items
             if not page.items or len(roms) >= (page.total or 0):
                 return roms
+
+    # Whether RomM has an image under /assets (covers), and its size in bytes if RomM says.
+    # RomM serves these without a login; the token is sent anyway and does no harm.
+    async def asset_head(self, path: str) -> tuple[bool, int | None]:
+        response = await self._asset_request("HEAD", path)
+        if response.status_code != 200:
+            return False, None
+        length = response.headers.get("Content-Length", "")
+        return True, int(length) if length.isdigit() else None
+
+    # The bytes of an image under /assets, or None if RomM does not have it
+    async def asset(self, path: str) -> bytes | None:
+        response = await self._asset_request("GET", path)
+        return response.content if response.status_code == 200 else None
+
+    async def _asset_request(self, method: str, path: str) -> httpx.Response:
+        path = "/" + path.split("?", 1)[0].lstrip("/")  # RomM adds "?ts=..."; the file is the same without it
+        try:
+            return await self._client.request(method, path)
+        except httpx.HTTPError as error:
+            raise RomMError(f"cannot fetch {path} from RomM: {error or type(error).__name__}") from error
 
 
 # Validate the structure of our models

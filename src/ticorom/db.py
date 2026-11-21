@@ -87,6 +87,18 @@ MIGRATIONS: list[str] = [
       last_used_at    INTEGER
     );
     """,
+    # 2: cover images. No foreign key to roms: the roms table is replaced on every
+    # sync, and a cascade would throw away every cover each time.
+    """
+    ALTER TABLE roms ADD COLUMN cover_large_path TEXT;
+
+    CREATE TABLE covers (
+      rom_id          INTEGER PRIMARY KEY,
+      source          TEXT NOT NULL,
+      file            TEXT,
+      fetched_at      INTEGER NOT NULL
+    );
+    """,
 ]
 
 

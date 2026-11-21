@@ -33,11 +33,13 @@ def build(conn: sqlite3.Connection, settings: Settings) -> int:
     rows = conn.execute("""
         SELECT packages.id, packages.tico_slug, packages.install, packages.filename, packages.version,
                roms.name, roms.fs_name, roms.summary, roms.genres, roms.release_date,
-               file_facts.size, file_facts.sha256, platforms.name AS platform_name
+               file_facts.size, file_facts.sha256, platforms.name AS platform_name,
+               covers.file AS cover_file
         FROM packages
         JOIN roms ON roms.id = packages.rom_id
         JOIN platforms ON platforms.id = roms.platform_id
         JOIN file_facts ON file_facts.path = packages.path
+        LEFT JOIN covers ON covers.rom_id = roms.id
         WHERE packages.status = ? AND file_facts.sha256 IS NOT NULL
         ORDER BY roms.name COLLATE NOCASE, packages.id
     """, (PUBLISHED,)).fetchall()
@@ -85,6 +87,8 @@ def _package_entry(row: sqlite3.Row, app_url: str) -> dict:
     line = tagline(row["fs_name"], json.loads(row["genres"]), row["release_date"])
     if line:
         entry["tagline"] = line
+    if row["cover_file"]:
+        entry["icon"] = f"{app_url}/r/{TOKEN_PLACEHOLDER}/img/{row['cover_file']}"
     entry.update({
         "category": "game",
         "tags": [row["tico_slug"]],
