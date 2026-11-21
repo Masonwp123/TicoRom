@@ -1,7 +1,6 @@
 FROM python:3.15-alpine
 
 LABEL maintainer="Mason Parker <masonparker868@gmail.com>"
-LABEL version="0.1.0"
 LABEL description="Tico RomM Bridge"
 
 ENV PYTHONUNBUFFERED=1 \
