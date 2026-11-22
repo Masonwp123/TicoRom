@@ -25,7 +25,7 @@ You need Docker with Compose, a RomM instance, and the folder RomM uses as its l
 
    The log begins with the startup checks. If one says `FAIL`, the container stops; fix the setting and start it again.
 
-3. Point your HTTPS reverse proxy at `http://<this machine>:8080`. tico only connects over HTTPS. DESIGN.md Appendix A has proxy settings.
+3. Point your HTTPS reverse proxy at `http://<this machine>:8080`. tico only connects over HTTPS. [`.claude/rules/deployment.md`](.claude/rules/deployment.md) (Appendix A) has proxy settings for Nginx Proxy Manager, nginx and Apache.
 
 4. Create an access token and add the repository in tico:
 
@@ -72,3 +72,9 @@ uv run ticorom check             # startup checks, using .env in the current fol
 uv run ticorom sync              # one sync with RomM; the database is CONFIG_PATH/ticorom.db
 uv add <package>                 # add a dependency (uv add --dev for a dev tool)
 ```
+
+## AI usage disclosure
+
+TicoRom is developed with the help of AI using Claude Code. All code generated is tested on real hardware and ensured to work before new releases are created.  This means that the latest release is thoroughly tested and ensured to work.
+
+AI-assisted code can still contain mistakes. If you find one, please open an issue.

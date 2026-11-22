@@ -15,3 +15,7 @@ docker/
 # Configuration
 .env
 *.egg-info/
+
+# Claude Code: personal settings and notes (the shared ones in .claude/ are committed)
+.claude/settings.local.json
+CLAUDE.local.md
