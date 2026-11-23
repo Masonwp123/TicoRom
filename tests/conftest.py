@@ -3,7 +3,8 @@ import pytest
 from ticorom.startup.settings import Settings
 
 SETTING_NAMES = ["APP_URL", "ROMM_URL", "ROMM_API_TOKEN", "INSTANCE_SLUG", "SYNC_INTERVAL_MINUTES",
-                 "LIBRARY_PATH", "CONFIG_PATH", "CACHE_PATH", "CACHE_MAX_GB", "SKIP_FILES_OVER_4GIB"]
+                 "LIBRARY_PATH", "CONFIG_PATH", "CACHE_PATH", "CACHE_MAX_GB", "SKIP_FILES_OVER_4GIB",
+                 "HASH_WORKERS", "HASH_MAX_MIB_PER_SECOND"]
 
 
 @pytest.fixture(autouse=True)

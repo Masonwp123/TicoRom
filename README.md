@@ -15,6 +15,8 @@ You need Docker with Compose, a RomM instance, and the folder RomM uses as its l
    | `ROMM_API_TOKEN` | A RomM client API token with the scopes `roms.read` and `platforms.read`. |
    | `INSTANCE_SLUG` | A short label for this RomM, part of every package id. Do not change it once games are installed. |
    | `PUID`, `PGID` | User and group TicoRom runs as. They must be able to read the library and write the other two folders. |
+   | `HASH_WORKERS` | How many files are hashed at the same time (default 1). More only helps with fast storage. |
+   | `HASH_MAX_MIB_PER_SECOND` | A cap on the hashing speed, to spare the CPU and disks while the first sync hashes the library (default 0: no cap). |
 
 2. Start it:
 

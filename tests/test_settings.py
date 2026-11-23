@@ -48,3 +48,25 @@ def test_settings_are_read_from_the_environment(monkeypatch):
     settings = Settings(_env_file=None)
     assert settings.skip_files_over_4gib is False
     assert settings.instance_slug == "home"
+
+
+def test_hashing_settings(monkeypatch):
+    monkeypatch.setenv("APP_URL", "https://tico.example")
+    monkeypatch.setenv("ROMM_URL", "https://romm.example")
+    monkeypatch.setenv("ROMM_API_TOKEN", "rmm_x")
+    defaults = Settings(_env_file=None)
+    assert (defaults.hash_workers, defaults.hash_max_mib_per_second) == (1, 0)
+    monkeypatch.setenv("HASH_WORKERS", "3")
+    monkeypatch.setenv("HASH_MAX_MIB_PER_SECOND", "20")
+    settings = Settings(_env_file=None)
+    assert (settings.hash_workers, settings.hash_max_mib_per_second) == (3, 20)
+
+
+@pytest.mark.parametrize("name, value", [("HASH_WORKERS", "0"), ("HASH_MAX_MIB_PER_SECOND", "-1")])
+def test_bad_hashing_settings_are_refused(monkeypatch, name, value):
+    monkeypatch.setenv("APP_URL", "https://tico.example")
+    monkeypatch.setenv("ROMM_URL", "https://romm.example")
+    monkeypatch.setenv("ROMM_API_TOKEN", "rmm_x")
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)

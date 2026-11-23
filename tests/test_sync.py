@@ -366,3 +366,23 @@ def test_a_failed_sync_is_retried_soon_rather_than_after_the_full_interval(monke
         return syncer.runs
 
     assert asyncio.run(scenario()) >= 3
+
+
+def test_a_hashing_speed_cap_is_used_by_the_sync(make_settings):
+    import time
+    settings = make_settings(hash_max_mib_per_second=4, hash_workers=2)
+    settings.config_path.mkdir()
+    database = Database.in_config(settings.config_path)
+    database.migrate()
+    romm = FakeRomM()
+    for rom_id in (1, 2):
+        path = settings.library_path / f"roms/gba/Game {rom_id}.7z"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(bytes([rom_id]) * (2 * 1024 * 1024))
+        romm.add(rom_id, 1, f"Game {rom_id}.7z")
+    syncer = Syncer(settings, MAP, database, transport=httpx.MockTransport(romm.handler))
+    assert syncer.hash_workers == 2
+    started = time.monotonic()
+    result = asyncio.run(syncer.run())
+    assert result.hashed_files == 2 and result.published == 2
+    assert time.monotonic() - started >= 0.7     # 4 MiB at 4 MiB/s, less the first MiB

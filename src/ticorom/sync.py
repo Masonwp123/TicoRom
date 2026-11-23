@@ -17,15 +17,13 @@ import httpx
 
 from ticorom import covers, index, packages
 from ticorom.db import Database, transaction
-from ticorom.library import GIB, HashCancelled, chd_type, is_safe_relative, sha256_file, stat_file
+from ticorom.library import (GIB, HashCancelled, Throttle, chd_type, is_safe_relative, lower_thread_priority,
+                             sha256_file, stat_file)
 from ticorom.romm import RomMClient, RomMError, RomMPlatform, RomMRom
 from ticorom.startup.platforms import PlatformMap, Status
 from ticorom.startup.settings import Settings
 
 log = logging.getLogger("ticorom.sync")
-
-# Files hashed at the same time. Kept low so hashing does not hog the disk RomM also uses.
-HASH_WORKERS = 2
 
 # During a long hash, how often newly hashed games are published.
 REPUBLISH_EVERY_SECONDS = 30
@@ -106,13 +104,15 @@ class HashOutcome:
 # Runs syncs. One instance is shared by the background loop and `ticorom sync`.
 class Syncer:
     def __init__(self, settings: Settings, platform_map: PlatformMap, database: Database,
-                 transport: httpx.AsyncBaseTransport | None = None, hash_workers: int = HASH_WORKERS) -> None:
+                 transport: httpx.AsyncBaseTransport | None = None, hash_workers: int | None = None) -> None:
         self.settings = settings
         self.platform_map = platform_map
         self.database = database
         # Tests pass a fake RomM here; None means the real network
         self.transport = transport
-        self.hash_workers = hash_workers
+        # Files hashed at the same time (HASH_WORKERS). Few, so hashing does not
+        # hog the CPU or the disk RomM also uses.
+        self.hash_workers = hash_workers or settings.hash_workers
 
     # Run one sync, start to finish, and record it in the sync_runs table.
     # Setting `stop` makes a running hash give up quickly (used on shutdown).
@@ -244,15 +244,20 @@ class Syncer:
             return
 
         total_bytes = sum(row["size"] for row in todo)
-        log.info("Hashing %d files (%.1f GiB)", len(todo), total_bytes / GIB)
+        limit = self.settings.hash_max_mib_per_second
+        log.info("Hashing %d files (%.1f GiB) with %d thread(s)%s", len(todo), total_bytes / GIB, self.hash_workers,
+                 f", at most {limit:g} MiB/s" if limit else "")
         library = self.settings.library_path
         last_republish = time.monotonic()
+        # One speed cap shared by all hashing threads
+        throttle = Throttle(limit * 1024 * 1024) if limit else None
 
-        # The pool hashes files in its own threads. This thread collects the
-        # results as they finish and is the only one that writes to the database.
-        pool = ThreadPoolExecutor(self.hash_workers, thread_name_prefix="hash")
+        # The pool hashes files in its own threads, at the lowest CPU priority.
+        # This thread collects the results as they finish and is the only one
+        # that writes to the database.
+        pool = ThreadPoolExecutor(self.hash_workers, thread_name_prefix="hash", initializer=lower_thread_priority)
         try:
-            jobs = [pool.submit(_hash_one, library, row["path"], row["size"], row["mtime_ns"], stop)
+            jobs = [pool.submit(_hash_one, library, row["path"], row["size"], row["mtime_ns"], stop, throttle)
                     for row in todo]
 
             for job in as_completed(jobs):
@@ -428,14 +433,15 @@ def _file_rows(roms: list[RomMRom]) -> list[tuple]:
 # Hash one file. Runs in a pool thread.
 # The file is checked before and after hashing: if it changed in between,
 # the hash would describe neither version, so it is thrown away and the file is hashed again next sync.
-def _hash_one(library: Path, path: str, size: int, mtime_ns: int, stop: threading.Event) -> HashOutcome:
+def _hash_one(library: Path, path: str, size: int, mtime_ns: int, stop: threading.Event,
+              throttle: Throttle | None = None) -> HashOutcome:
     outcome = HashOutcome(path, size, mtime_ns)
     full_path = library / path
     try:
         if stat_file(full_path) != (size, mtime_ns):
             outcome.problem = "the file changed during the sync; it is hashed next time"
             return outcome
-        sha256 = sha256_file(full_path, stop)       # raises HashCancelled if `stop` is set
+        sha256 = sha256_file(full_path, stop, throttle)   # raises HashCancelled if `stop` is set
         if stat_file(full_path) != (size, mtime_ns):
             outcome.problem = "the file changed while it was hashed; it is hashed next time"
             return outcome

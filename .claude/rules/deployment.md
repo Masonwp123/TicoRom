@@ -38,6 +38,8 @@ CONFIG_PATH=/data/config            # platforms.yaml and the SQLite database
 CACHE_PATH=/data/cache              # built indexes and bundle zips; safe to delete
 CACHE_MAX_GB=50                     # not used yet: for bundle zips (§7.2)
 SKIP_FILES_OVER_4GIB=true           # FAT32 cards; set false only for exFAT
+HASH_WORKERS=1                      # files hashed at the same time (added after 1.0.0)
+HASH_MAX_MIB_PER_SECOND=0           # cap on hashing speed in MiB/s; 0 = no cap (added after 1.0.0)
 PUID=1000                           # user and group the bridge runs as in the container;
 PGID=1000                           # must read the library and write config and cache
 APP_PORT=8080                       # port on the host that the reverse proxy forwards to

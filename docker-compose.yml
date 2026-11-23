@@ -32,6 +32,10 @@ services:
       SYNC_INTERVAL_MINUTES: 60
       # Skip over 4GB files, as FAT32 cannot write them
       SKIP_FILES_OVER_4GIB: true
+      # Files hashed at the same time; more only helps on fast storage
+      HASH_WORKERS: 1
+      # Cap on hashing speed in MiB/s to spare the CPU and disk; 0 means no cap
+      HASH_MAX_MIB_PER_SECOND: 0
     volumes:
       - /data/library:/data/library:ro
       - ./docker/config:/data/config

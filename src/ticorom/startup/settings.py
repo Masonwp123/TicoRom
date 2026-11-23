@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     cache_path: Path = Path("/data/cache")
     cache_max_gb: float = Field(default=50, gt=0)
     skip_files_over_4gib: bool = True
+    # Files hashed at the same time, and a cap on the hashing speed in MiB/s (0: no cap)
+    hash_workers: int = Field(default=1, ge=1, le=16)
+    hash_max_mib_per_second: float = Field(default=0, ge=0)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
